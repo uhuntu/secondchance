@@ -3,10 +3,14 @@
 API Key 读取优先级：环境变量 MOONSHOT_API_KEY > 项目目录 api_key.txt
 """
 import base64
+import http.client
 import io
 import json
 import os
+import socket
+import ssl
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -108,6 +112,23 @@ def analyze_image_events(image_path: str):
             if e.code == 429 and attempt < 7:
                 yield ("reasoning", f"\n[账号繁忙，第 {attempt + 1} 次重试，请稍候…]\n")
                 time.sleep(8 * (attempt + 1))
+                continue
+            raise last_error
+        except (
+            urllib.error.URLError,
+            ConnectionError,
+            TimeoutError,
+            ssl.SSLError,
+            http.client.HTTPException,
+            socket.timeout,
+        ) as e:
+            last_error = RuntimeError(f"模型连接中断：{e}")
+            if attempt < 7:
+                yield (
+                    "reasoning",
+                    f"\n[模型连接中断，正在自动重连（第 {attempt + 1} 次）…]\n",
+                )
+                time.sleep(min(5 * (attempt + 1), 30))
                 continue
             raise last_error
     if resp is None:
