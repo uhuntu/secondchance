@@ -23,7 +23,7 @@ class FakeResponse:
 def test_transient_connection_error_is_retried():
     original_key = ai.get_api_key
     original_encode = ai._encode_image
-    original_open = ai.urllib.request.urlopen
+    original_open = ai.API_OPENER.open
     original_sleep = ai.time.sleep
     calls = 0
 
@@ -37,13 +37,13 @@ def test_transient_connection_error_is_retried():
     try:
         ai.get_api_key = lambda: "test-key"
         ai._encode_image = lambda _: "image"
-        ai.urllib.request.urlopen = fake_open
+        ai.API_OPENER.open = fake_open
         ai.time.sleep = lambda _: None
         events = list(ai.analyze_image_events("unused.jpg"))
     finally:
         ai.get_api_key = original_key
         ai._encode_image = original_encode
-        ai.urllib.request.urlopen = original_open
+        ai.API_OPENER.open = original_open
         ai.time.sleep = original_sleep
 
     assert calls == 2

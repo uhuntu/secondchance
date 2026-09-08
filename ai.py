@@ -17,6 +17,9 @@ from pathlib import Path
 API_BASE = "https://api.moonshot.cn/v1/chat/completions"
 MODEL = "kimi-k2.6"
 KEY_FILE = Path(__file__).parent / "api_key.txt"
+# Moonshot's domestic API can be reset by overseas system-proxy routes.
+# Use a dedicated direct opener without changing proxy behavior for other apps.
+API_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 PROMPT = """你是一位耐心细致的小学数学老师，擅长辅导五年级学生。请分析这张错题照片，完成以下任务：
 
@@ -103,7 +106,7 @@ def analyze_image_events(image_path: str):
     last_error = None
     for attempt in range(8):
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            resp = API_OPENER.open(req, timeout=300)
             break
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "ignore")[:300]
