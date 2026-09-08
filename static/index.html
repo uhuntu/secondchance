@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数学错题本</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>数学错题本</h1>
+        <p class="subtitle">拍照上传 · 分类管理 · 随时回顾</p>
+    </header>
+
+    <main>
+        <!-- AI 分析状态条 -->
+        <div id="analyzeStatus" class="analyze-status" hidden></div>
+
+        <!-- 上传区 -->
+        <section class="upload-card">
+            <h2>拍错题</h2>
+            <div class="photo-picker">
+                <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
+                <button type="button" id="pickPhotoBtn" class="btn btn-primary btn-large">
+                    📷 拍照 / 选择照片
+                </button>
+                <div id="photoPreview" class="photo-preview" hidden>
+                    <img id="previewImg" alt="预览">
+                </div>
+            </div>
+            <button type="button" id="submitBtn" class="btn btn-primary btn-large">保存错题</button>
+            <button type="button" class="btn btn-large" onclick="window.open('/static/paper.html', '_blank')">📝 生成举一反三练习卷</button>
+            <p class="hint">拍完直接保存；知识点和备注之后点卡片上的「编辑」随时补</p>
+            <div id="uploadMsg" class="msg" hidden></div>
+        </section>
+
+        <!-- 列表区 -->
+        <section id="questionList" class="card-grid"></section>
+        <p id="emptyHint" class="empty-hint" hidden>还没有错题，先拍一道吧！</p>
+    </main>
+
+    <!-- 编辑弹窗 -->
+    <div id="editModal" class="modal" hidden>
+        <div class="modal-content">
+            <h3>编辑错题</h3>
+            <label>知识点 / 错误原因<input type="text" id="editKnowledgePoint" list="kpList"></label>
+            <label>备注<textarea id="editNote" rows="3"></textarea></label>
+            <datalist id="kpList"></datalist>
+            <div class="modal-actions">
+                <button type="button" id="editSaveBtn" class="btn btn-primary">保存</button>
+                <button type="button" id="editCancelBtn" class="btn">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI 思考过程 -->
+    <div id="thinkingModal" class="modal" hidden>
+        <div class="modal-content thinking-content">
+            <h3>🤔 AI 正在思考…</h3>
+            <pre id="thinkingText" class="thinking-text"></pre>
+            <div class="modal-actions">
+                <button type="button" id="thinkingCloseBtn" class="btn btn-primary" hidden>完成</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 大图查看 -->
+    <div id="lightbox" class="modal" hidden>
+        <div class="lightbox-content">
+            <img id="lightboxImg" alt="题目大图">
+            <button type="button" id="lightboxCloseBtn" class="btn">关闭</button>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

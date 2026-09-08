@@ -1,0 +1,28 @@
+# Secrets
+api_key.txt
+.env
+.env.*
+
+# Runtime data and user uploads
+questions.db
+questions.db-*
+questions.db.backup-*
+uploads/
+figures/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test/tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

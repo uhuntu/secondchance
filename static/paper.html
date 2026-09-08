@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>举一反三练习卷</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: "SimSun", "Songti SC", serif;
+            color: #000;
+            background: #f0f2f5;
+            line-height: 1.8;
+        }
+
+        .toolbar {
+            position: sticky;
+            top: 0;
+            background: #fff;
+            padding: 12px 16px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            border-bottom: 1px solid #e0e0e0;
+            z-index: 10;
+        }
+
+        .btn {
+            padding: 9px 22px;
+            border: 1px solid #d9d9d9;
+            border-radius: 8px;
+            background: #fff;
+            font-size: 15px;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: #4a6cf7;
+            border-color: #4a6cf7;
+            color: #fff;
+        }
+
+        .paper {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 16px auto;
+            background: #fff;
+            padding: 20mm 18mm;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .paper-title {
+            text-align: center;
+            font-size: 22px;
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+
+        .paper-subtitle {
+            text-align: center;
+            font-size: 13px;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .paper-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            border-bottom: 2px solid #000;
+            padding-bottom: 8px;
+            margin-bottom: 16px;
+        }
+
+        .kp-section {
+            margin-bottom: 14px;
+        }
+
+        .kp-title {
+            font-size: 15px;
+            font-weight: bold;
+            background: #f5f5f5;
+            padding: 4px 10px;
+            border-left: 4px solid #000;
+            margin-bottom: 8px;
+        }
+
+        .question {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .q-num {
+            flex-shrink: 0;
+            font-weight: bold;
+        }
+
+        .q-text {
+            flex: 1;
+        }
+
+        .q-fig {
+            font-family: "Courier New", monospace;
+            font-size: 15px;
+            line-height: 1.5;
+            margin: 6px 0 2px 2px;
+            letter-spacing: 2px;
+        }
+
+        .q-img {
+            display: block;
+            height: 120px;
+            margin: 6px 0 2px;
+        }
+
+        .answer-blank {
+            border-bottom: 1px solid #999;
+            display: inline-block;
+            min-width: 120px;
+            height: 1.2em;
+        }
+
+        .answers-page {
+            page-break-before: always;
+        }
+
+        /* 分开打印：只打题目或只打答案 */
+        @media print {
+            body.print-questions .answers-page {
+                display: none;
+            }
+
+            body.print-answers #questionPart {
+                display: none;
+            }
+
+            /* 只打答案时不再需要强制分页，避免开头一张空白页 */
+            body.print-answers .answers-page {
+                page-break-before: auto;
+            }
+        }
+
+        .answers-title {
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 12px;
+        }
+
+        .answer-item {
+            display: flex;
+            gap: 6px;
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+
+        .empty-tip {
+            text-align: center;
+            color: #999;
+            padding: 60px 0;
+            font-size: 15px;
+        }
+
+        @media print {
+            body {
+                background: #fff;
+            }
+
+            .toolbar {
+                display: none;
+            }
+
+            .paper {
+                width: auto;
+                min-height: auto;
+                margin: 0;
+                padding: 0;
+                box-shadow: none;
+            }
+
+            @page {
+                size: A4;
+                margin: 18mm;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <select id="paperMode" class="btn">
+            <option value="similar">举一反三练习卷</option>
+            <option value="original">原题重练卷</option>
+        </select>
+        <button class="btn btn-primary" onclick="printPart('questions')">🖨️ 打印题目卷（给孩子）</button>
+        <button class="btn" onclick="printPart('answers')">🖨️ 打印答案（家长留存）</button>
+        <button class="btn" onclick="window.close()">关闭</button>
+    </div>
+    <div class="paper" id="paper"></div>
+
+    <script>
+        function printPart(part) {
+            document.body.classList.remove("print-questions", "print-answers");
+            document.body.classList.add(part === "questions" ? "print-questions" : "print-answers");
+            window.print();
+        }
+
+        window.onafterprint = () => {
+            document.body.classList.remove("print-questions", "print-answers");
+        };
+    </script>
+
+    <script>
+        const paper = document.getElementById("paper");
+        const paperMode = document.getElementById("paperMode");
+
+        function esc(s) {
+            const d = document.createElement("div");
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function figureRefFilter(questions) {
+            // 依赖图形又没有附带任何图的题印不出来，跳过
+            return questions.filter((s) => {
+                const qt = s["题目"] || "";
+                const fig = s["图"];
+                const hasFig = typeof fig === "string" ? !!fig : !!(fig && (fig["立体"] || fig["字符画"]));
+                if (hasFig) return true;
+                return !/右图|左图|下图|上图|如图|图中|选项为.*图形|哪个图形/.test(qt);
+            });
+        }
+
+        function figHtml(fig) {
+            if (!fig) return "";
+            if (typeof fig === "string") {
+                return `<pre class="q-fig">${esc(fig.replace(/\\n/g, "\n"))}</pre>`;
+            }
+            if (fig["立体"]) {
+                const src = "/api/stack-figure?h=" + encodeURIComponent(JSON.stringify(fig["立体"]));
+                return `<img class="q-img" src="${src}" alt="立体图形">`;
+            }
+            if (fig["字符画"]) {
+                return `<pre class="q-fig">${esc(fig["字符画"].replace(/\\n/g, "\n"))}</pre>`;
+            }
+            return "";
+        }
+
+        function buildPaper() {
+            const mode = paperMode.value;
+            fetch("/api/questions")
+                .then((r) => r.json())
+                .then((list) => {
+                    const sections = [];
+                    list.filter((q) => q.analyzed).forEach((q) => {
+                        if (mode === "original") {
+                            // 原题重练：用 AI 重绘的干净原题，答案取当时的正确答案
+                            let redo = {};
+                            try {
+                                redo = JSON.parse(q.original_redo || "{}");
+                            } catch (e) {
+                                redo = {};
+                            }
+                            const qt = (redo["题目"] || q.question_text || "").trim();
+                            if (!qt) return;
+                            const qs = figureRefFilter([{ 题目: qt, 图: redo["图"] || "" }]);
+                            if (!qs.length) return;
+                            qs[0]["答案"] = (q.correct_answer || "").trim();
+                            sections.push({ kp: q.knowledge_point || "综合", questions: qs });
+                        } else {
+                            let similar = [];
+                            try {
+                                similar = JSON.parse(q.similar_questions || "[]");
+                            } catch (e) {
+                                similar = [];
+                            }
+                            similar = figureRefFilter(similar);
+                            if (similar.length) {
+                                sections.push({
+                                    kp: q.knowledge_point || "综合",
+                                    questions: similar,
+                                });
+                            }
+                        }
+                    });
+
+                    if (!sections.length) {
+                        paper.innerHTML = '<p class="empty-tip">还没有可出题的错题分析，先去分析几道错题吧！</p>';
+                        return;
+                    }
+
+                    const today = new Date().toLocaleDateString("zh-CN");
+                    const title = mode === "original" ? "数学原题重练卷" : "数学举一反三练习卷";
+                    let qNo = 0;
+                    let bodyHtml = "";
+                    const answers = [];
+
+                    sections.forEach((sec, si) => {
+                        bodyHtml += `<div class="kp-section"><div class="kp-title">【${esc(sec.kp)}】</div>`;
+                        sec.questions.forEach((s) => {
+                            qNo++;
+                            const qt = (s["题目"] || "").trim();
+                            bodyHtml += `<div class="question"><span class="q-num">${qNo}.</span><span class="q-text">${esc(qt)}${figHtml(s["图"])}　<span class="answer-blank"></span></span></div>`;
+                            answers.push({ no: qNo, ans: (s["答案"] || "").trim() });
+                        });
+                        bodyHtml += "</div>";
+                    });
+
+                    let ansHtml = '<div class="answers-page"><div class="answers-title">参考答案</div>';
+                    answers.forEach((a) => {
+                        ansHtml += `<div class="answer-item"><span class="q-num">${a.no}.</span><span>${esc(a.ans)}</span></div>`;
+                    });
+                    ansHtml += "</div>";
+
+                    paper.innerHTML = `
+                        <div class="paper-title">${title}</div>
+                        <div class="paper-subtitle">依据错题本自动生成 · 人教版五年级</div>
+                        <div class="paper-meta"><span>姓名：＿＿＿＿＿＿</span><span>日期：${today}</span><span>共 ${qNo} 题</span></div>
+                        <div id="questionPart">${bodyHtml}</div>
+                        ${ansHtml}
+                    `;
+                });
+        }
+
+        paperMode.onchange = buildPaper;
+        buildPaper();
+    </script>
+</body>
+</html>
