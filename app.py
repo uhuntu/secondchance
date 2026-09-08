@@ -1,4 +1,5 @@
 import json
+import shutil
 import uuid
 from pathlib import Path
 
@@ -176,17 +177,32 @@ def recorrect_saved_page(question_id: int, db: Session = Depends(get_db)):
     question = db.get(Question, question_id)
     if not question:
         raise HTTPException(404, "错题不存在")
-    if not question.source_image_path:
-        raise HTTPException(400, "这条旧记录没有保存整张原卷，请重新上传照片")
-
-    source_path = Path(question.source_image_path)
+    source_image_path = question.source_image_path
+    if not source_image_path:
+        current_path = Path(question.image_path)
+        if not current_path.is_file():
+            raise HTTPException(404, "已保存的照片文件不存在，请重新上传照片")
+        source_path = UPLOAD_DIR / (
+            f"{uuid.uuid4().hex}_original{current_path.suffix.lower() or '.jpg'}"
+        )
+        try:
+            shutil.copy2(current_path, source_path)
+        except OSError as exc:
+            raise HTTPException(500, f"原图备份失败：{str(exc)[:200]}")
+        source_image_path = str(source_path)
+        question.source_image_path = source_image_path
+        db.flush()
+    else:
+        source_path = Path(source_image_path)
     if not source_path.is_file():
         raise HTTPException(404, "整张原卷文件已丢失，请重新上传照片")
 
-    source_image_path = question.source_image_path
     group = (
         db.query(Question)
-        .filter(Question.source_image_path == source_image_path)
+        .filter(
+            (Question.source_image_path == source_image_path)
+            | (Question.id == question.id)
+        )
         .order_by(Question.id.asc())
         .all()
     )

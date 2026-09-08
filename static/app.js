@@ -300,13 +300,11 @@ function renderList() {
                         });
                 };
                 actions.appendChild(analyzeBtn);
-                if (q.source_image_url) {
-                    const recorrectBtn = document.createElement("button");
-                    recorrectBtn.className = "btn btn-small";
-                    recorrectBtn.textContent = "重新校正原卷";
-                    recorrectBtn.onclick = () => recorrectPage(q, recorrectBtn);
-                    actions.appendChild(recorrectBtn);
-                }
+                const recorrectBtn = document.createElement("button");
+                recorrectBtn.className = "btn btn-small";
+                recorrectBtn.textContent = q.source_image_url ? "重新校正原卷" : "校正已存照片";
+                recorrectBtn.onclick = () => recorrectPage(q, recorrectBtn);
+                actions.appendChild(recorrectBtn);
                 const editBtn = document.createElement("button");
                 editBtn.className = "btn btn-small";
                 editBtn.textContent = "编辑";
@@ -327,7 +325,10 @@ function renderList() {
 }
 
 async function recorrectPage(q, button) {
-    if (!confirm("将使用已保存的整张原卷重新放平并切割。切片数量可能变化，AI 分析不会自动重跑。是否继续？")) return;
+    const sourceHint = q.source_image_url
+        ? "将使用已保存的整张原卷重新放平并切割。"
+        : "这是旧记录，将先把当前照片备份为原图，再尝试放平和切割。";
+    if (!confirm(sourceHint + "切片数量可能变化，AI 分析不会自动重跑。是否继续？")) return;
     button.disabled = true;
     button.textContent = "校正中…";
     try {
@@ -340,7 +341,7 @@ async function recorrectPage(q, button) {
     } catch (error) {
         showMsg(error.message, false);
         button.disabled = false;
-        button.textContent = "重新校正原卷";
+        button.textContent = q.source_image_url ? "重新校正原卷" : "校正已存照片";
     }
 }
 
