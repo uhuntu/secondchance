@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ai import analyze_image, analyze_image_events
 from database import Base, add_column_if_missing, engine, get_db
 from figure import render_stack
+from image_processing import process_page
 from models import Question
 
 BASE_DIR = Path(__file__).parent
@@ -32,6 +33,7 @@ for _col, _ddl in [
     ("explanation", "TEXT DEFAULT ''"),
     ("similar_questions", "TEXT DEFAULT ''"),
     ("original_redo", "TEXT DEFAULT ''"),
+    ("source_image_path", "TEXT DEFAULT ''"),
 ]:
     add_column_if_missing("questions", _col, _ddl)
 
@@ -46,6 +48,9 @@ def question_to_dict(q: Question) -> dict:
         "knowledge_point": q.knowledge_point,
         "note": q.note,
         "image_url": f"/uploads/{Path(q.image_path).name}",
+        "source_image_url": (
+            f"/uploads/{Path(q.source_image_path).name}" if q.source_image_path else ""
+        ),
         "created_at": q.created_at.isoformat(),
         "analyzed": bool(q.question_text or q.error_analysis),
         "question_text": q.question_text,
@@ -112,6 +117,51 @@ async def create_question(
     db.commit()
     db.refresh(question)
     return question_to_dict(question)
+
+
+@app.post("/api/pages", status_code=201)
+async def import_page(
+    subject: str = Form("数学"),
+    photo: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """保存整页原图，自动校正并按红色批改标记切成候选错题。"""
+    ext = Path(photo.filename or "").suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp")
+    content = await photo.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(400, "文件超过 10MB 限制")
+    if not content:
+        raise HTTPException(400, "文件内容为空")
+
+    stem = uuid.uuid4().hex
+    source_path = UPLOAD_DIR / f"{stem}_original{ext}"
+    source_path.write_bytes(content)
+    try:
+        result = process_page(source_path, UPLOAD_DIR, stem)
+    except Exception as exc:
+        source_path.unlink(missing_ok=True)
+        raise HTTPException(400, f"照片处理失败：{str(exc)[:200]}")
+    result.corrected_path.unlink(missing_ok=True)
+
+    questions = []
+    for crop_path in result.crop_paths:
+        question = Question(
+            subject=subject.strip() or "数学",
+            image_path=str(crop_path),
+            source_image_path=str(source_path),
+        )
+        db.add(question)
+        questions.append(question)
+    db.commit()
+    for question in questions:
+        db.refresh(question)
+    return {
+        "questions": [question_to_dict(question) for question in questions],
+        "page_detected": result.page_detected,
+        "red_mark_count": result.mark_count,
+    }
 
 
 class QuestionUpdate(BaseModel):
@@ -216,12 +266,24 @@ def delete_question(question_id: int, db: Session = Depends(get_db)):
     question = db.get(Question, question_id)
     if not question:
         raise HTTPException(404, "错题不存在")
+    source_path = question.source_image_path
     try:
         os.remove(question.image_path)
     except OSError:
         pass
     db.delete(question)
     db.commit()
+    if source_path:
+        still_used = (
+            db.query(Question)
+            .filter(Question.source_image_path == source_path)
+            .first()
+        )
+        if not still_used:
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass
 
 
 @app.get("/uploads/{filename}")

@@ -13,6 +13,7 @@ class Question(Base):
     knowledge_point = Column(String(200), default="")
     note = Column(Text, default="")
     image_path = Column(String(300), nullable=False)
+    source_image_path = Column(String(300), default="")  # 自动切题前的整页原图
     # AI 分析结果
     question_text = Column(Text, default="")      # 识别出的题目文字
     child_answer = Column(Text, default="")       # 孩子的作答

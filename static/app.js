@@ -354,7 +354,7 @@ submitBtn.onclick = () => {
     fd.append("subject", "数学");
     fd.append("photo", photoInput.files[0]);
 
-    fetch("/api/questions", { method: "POST", body: fd })
+    fetch("/api/pages", { method: "POST", body: fd })
         .then(async (r) => {
             if (!r.ok) {
                 const err = await r.json().catch(() => ({}));
@@ -362,18 +362,23 @@ submitBtn.onclick = () => {
             }
             photoInput.value = "";
             photoPreview.hidden = true;
+            const result = await r.json();
+            const created = result.questions || [];
             renderList();
-            // 保存成功后自动进行 AI 分析
-            const created = await r.json().catch(() => null);
-            if (created && created.id) {
-                showMsg("已保存，AI 分析中…", true);
-                try {
-                    await analyzeQuestion(created.id);
-                    showMsg("AI 分析完成！", true);
-                } catch (e) {
-                    showMsg(e.message, false);
+            if (created.length) {
+                const detection = result.red_mark_count
+                    ? `检测到 ${result.red_mark_count} 处红色批改，已切成 ${created.length} 道候选错题`
+                    : "未检测到红色批改，已按完整照片保存";
+                showMsg(detection + "，AI 将逐题分析…", true);
+                for (const question of created) {
+                    try {
+                        await analyzeQuestion(question.id);
+                    } catch (e) {
+                        showMsg(`第 ${question.id} 题分析失败：${e.message}`, false);
+                    }
+                    renderList();
                 }
-                renderList();
+                showMsg(`已完成 ${created.length} 道候选错题的处理`, true);
             }
         })
         .catch((e) => showMsg(e.message, false))
