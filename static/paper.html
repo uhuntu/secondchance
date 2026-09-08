@@ -194,10 +194,6 @@
 </head>
 <body>
     <div class="toolbar">
-        <select id="paperMode" class="btn">
-            <option value="similar">举一反三练习卷</option>
-            <option value="original">原题重练卷</option>
-        </select>
         <button class="btn btn-primary" onclick="printPart('questions')">🖨️ 打印题目卷（给孩子）</button>
         <button class="btn" onclick="printPart('answers')">🖨️ 打印答案（家长留存）</button>
         <button class="btn" onclick="window.close()">关闭</button>
@@ -218,7 +214,6 @@
 
     <script>
         const paper = document.getElementById("paper");
-        const paperMode = document.getElementById("paperMode");
 
         function esc(s) {
             const d = document.createElement("div");
@@ -253,40 +248,23 @@
         }
 
         function buildPaper() {
-            const mode = paperMode.value;
             fetch("/api/questions")
                 .then((r) => r.json())
                 .then((list) => {
                     const sections = [];
                     list.filter((q) => q.analyzed).forEach((q) => {
-                        if (mode === "original") {
-                            // 原题重练：用 AI 重绘的干净原题，答案取当时的正确答案
-                            let redo = {};
-                            try {
-                                redo = JSON.parse(q.original_redo || "{}");
-                            } catch (e) {
-                                redo = {};
-                            }
-                            const qt = (redo["题目"] || q.question_text || "").trim();
-                            if (!qt) return;
-                            const qs = figureRefFilter([{ 题目: qt, 图: redo["图"] || "" }]);
-                            if (!qs.length) return;
-                            qs[0]["答案"] = (q.correct_answer || "").trim();
-                            sections.push({ kp: q.knowledge_point || "综合", questions: qs });
-                        } else {
-                            let similar = [];
-                            try {
-                                similar = JSON.parse(q.similar_questions || "[]");
-                            } catch (e) {
-                                similar = [];
-                            }
-                            similar = figureRefFilter(similar);
-                            if (similar.length) {
-                                sections.push({
-                                    kp: q.knowledge_point || "综合",
-                                    questions: similar,
-                                });
-                            }
+                        let similar = [];
+                        try {
+                            similar = JSON.parse(q.similar_questions || "[]");
+                        } catch (e) {
+                            similar = [];
+                        }
+                        similar = figureRefFilter(similar);
+                        if (similar.length) {
+                            sections.push({
+                                kp: q.knowledge_point || "综合",
+                                questions: similar,
+                            });
                         }
                     });
 
@@ -296,7 +274,7 @@
                     }
 
                     const today = new Date().toLocaleDateString("zh-CN");
-                    const title = mode === "original" ? "数学原题重练卷" : "数学举一反三练习卷";
+                    const title = "数学举一反三练习卷";
                     let qNo = 0;
                     let bodyHtml = "";
                     const answers = [];
@@ -328,7 +306,6 @@
                 });
         }
 
-        paperMode.onchange = buildPaper;
         buildPaper();
     </script>
 </body>
