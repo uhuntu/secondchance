@@ -13,6 +13,12 @@ def test_red_marks_create_question_bands():
     for y in (250, 650, 980):
         cv2.line(page, (600, y - 25), (650, y + 25), (0, 0, 220), 10)
         cv2.line(page, (650, y - 25), (600, y + 25), (0, 0, 220), 10)
+    # Two wrong marks on the same answer line are one candidate question.
+    cv2.line(page, (300, 625), (350, 675), (0, 0, 220), 10)
+    cv2.line(page, (350, 625), (300, 675), (0, 0, 220), 10)
+    # A small teacher tick is a correct-answer mark and must not create a crop.
+    cv2.line(page, (180, 450), (188, 458), (0, 0, 220), 3)
+    cv2.line(page, (188, 458), (205, 438), (0, 0, 220), 3)
     with TemporaryDirectory() as directory:
         source = Path(directory) / "page.jpg"
         cv2.imwrite(str(source), page)

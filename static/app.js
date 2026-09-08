@@ -367,7 +367,7 @@ submitBtn.onclick = () => {
             renderList();
             if (created.length) {
                 const detection = result.red_mark_count
-                    ? `检测到 ${result.red_mark_count} 处红色批改，已切成 ${created.length} 道候选错题`
+                    ? `检测到 ${result.red_mark_count} 组明显红叉/圈叉，已切成 ${created.length} 道候选错题`
                     : "未检测到红色批改，已按完整照片保存";
                 showMsg(detection + "，AI 将逐题分析…", true);
                 for (const question of created) {

@@ -82,9 +82,27 @@ def _red_mark_centers(image: np.ndarray) -> list[int]:
     joined = cv2.dilate(red, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(9, width // 90), max(7, height // 180))), iterations=2)
     count, _, stats, centroids = cv2.connectedComponentsWithStats(joined)
     centers = []
+    minimum_mark_area = max(700, int(width * height * 0.00045))
+    minimum_mark_span = max(30, int(width * 0.028))
+    minimum_red_pixels = max(80, int(width * height * 0.00005))
     for index in range(1, count):
         x, y, w, h, area = stats[index]
-        if area < max(45, width * height * 0.000015) or w < 5 or h < 5:
+        raw_mark = red[y : y + h, x : x + w]
+        raw_y, raw_x = np.nonzero(raw_mark)
+        red_pixels = len(raw_x)
+        raw_span = (
+            max(int(np.ptp(raw_x)), int(np.ptp(raw_y)))
+            if red_pixels
+            else 0
+        )
+        # Teacher crosses/circles are prominent marks. Small red ticks, printed
+        # decorations and isolated pen strokes should not create questions.
+        if (
+            area < minimum_mark_area
+            or max(w, h) < minimum_mark_span
+            or red_pixels < minimum_red_pixels
+            or raw_span < minimum_mark_span
+        ):
             continue
         if (
             x < width * 0.015
@@ -96,7 +114,8 @@ def _red_mark_centers(image: np.ndarray) -> list[int]:
         centers.append(int(centroids[index][1]))
     centers.sort()
     merged = []
-    merge_distance = max(55, int(height * 0.035))
+    # Multiple strokes/circles on the same answer line belong to one subquestion.
+    merge_distance = max(70, int(height * 0.05))
     for center in centers:
         if merged and center - merged[-1] < merge_distance:
             merged[-1] = (merged[-1] + center) // 2
