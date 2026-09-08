@@ -300,6 +300,13 @@ function renderList() {
                         });
                 };
                 actions.appendChild(analyzeBtn);
+                if (q.source_image_url) {
+                    const recorrectBtn = document.createElement("button");
+                    recorrectBtn.className = "btn btn-small";
+                    recorrectBtn.textContent = "重新校正原卷";
+                    recorrectBtn.onclick = () => recorrectPage(q, recorrectBtn);
+                    actions.appendChild(recorrectBtn);
+                }
                 const editBtn = document.createElement("button");
                 editBtn.className = "btn btn-small";
                 editBtn.textContent = "编辑";
@@ -317,6 +324,24 @@ function renderList() {
                 questionList.appendChild(card);
             });
         });
+}
+
+async function recorrectPage(q, button) {
+    if (!confirm("将使用已保存的整张原卷重新放平并切割。切片数量可能变化，AI 分析不会自动重跑。是否继续？")) return;
+    button.disabled = true;
+    button.textContent = "校正中…";
+    try {
+        const response = await fetch(`/api/questions/${q.id}/recorrect`, { method: "POST" });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || "重新校正失败");
+        renderList();
+        const pageText = result.page_detected ? "原卷已放平" : "未识别到完整纸张边界，已按原图切割";
+        showMsg(`${pageText}；更新 ${result.updated_count} 道，新增 ${result.created_count} 道，移除 ${result.removed_count} 道。需要时请点“重新分析”。`, true);
+    } catch (error) {
+        showMsg(error.message, false);
+        button.disabled = false;
+        button.textContent = "重新校正原卷";
+    }
 }
 
 function openEdit(q) {

@@ -1,5 +1,4 @@
 import json
-import os
 import uuid
 from pathlib import Path
 
@@ -60,6 +59,13 @@ def question_to_dict(q: Question) -> dict:
         "explanation": q.explanation,
         "similar_questions": q.similar_questions,
     }
+
+
+def _delete_file(path: str | Path) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 @app.get("/")
@@ -161,6 +167,74 @@ async def import_page(
         "questions": [question_to_dict(question) for question in questions],
         "page_detected": result.page_detected,
         "red_mark_count": result.mark_count,
+    }
+
+
+@app.post("/api/questions/{question_id}/recorrect")
+def recorrect_saved_page(question_id: int, db: Session = Depends(get_db)):
+    """Re-run page correction/cropping for every question from one saved source page."""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    if not question.source_image_path:
+        raise HTTPException(400, "这条旧记录没有保存整张原卷，请重新上传照片")
+
+    source_path = Path(question.source_image_path)
+    if not source_path.is_file():
+        raise HTTPException(404, "整张原卷文件已丢失，请重新上传照片")
+
+    source_image_path = question.source_image_path
+    group = (
+        db.query(Question)
+        .filter(Question.source_image_path == source_image_path)
+        .order_by(Question.id.asc())
+        .all()
+    )
+    stem = f"{source_path.stem}_recorrect_{uuid.uuid4().hex[:10]}"
+    try:
+        result = process_page(source_path, UPLOAD_DIR, stem)
+    except Exception as exc:
+        raise HTTPException(400, f"重新校正失败：{str(exc)[:200]}")
+    result.corrected_path.unlink(missing_ok=True)
+
+    new_paths = list(result.crop_paths)
+    old_paths = [Path(item.image_path) for item in group]
+    try:
+        for item, crop_path in zip(group, new_paths):
+            item.image_path = str(crop_path)
+        for crop_path in new_paths[len(group):]:
+            db.add(
+                Question(
+                    subject=question.subject,
+                    image_path=str(crop_path),
+                    source_image_path=source_image_path,
+                )
+            )
+        for item in group[len(new_paths):]:
+            db.delete(item)
+        db.commit()
+    except Exception:
+        db.rollback()
+        for path in new_paths:
+            _delete_file(path)
+        raise HTTPException(500, "重新校正结果保存失败，原记录未更改")
+
+    for path in old_paths:
+        if path not in new_paths:
+            _delete_file(path)
+    refreshed = (
+        db.query(Question)
+        .filter(Question.source_image_path == source_image_path)
+        .order_by(Question.id.asc())
+        .all()
+    )
+    return {
+        "questions": [question_to_dict(item) for item in refreshed],
+        "page_detected": result.page_detected,
+        "red_mark_count": result.mark_count,
+        "updated_count": min(len(group), len(new_paths)),
+        "created_count": max(0, len(new_paths) - len(group)),
+        "removed_count": max(0, len(group) - len(new_paths)),
     }
 
 
@@ -267,10 +341,7 @@ def delete_question(question_id: int, db: Session = Depends(get_db)):
     if not question:
         raise HTTPException(404, "错题不存在")
     source_path = question.source_image_path
-    try:
-        os.remove(question.image_path)
-    except OSError:
-        pass
+    _delete_file(question.image_path)
     db.delete(question)
     db.commit()
     if source_path:
@@ -280,10 +351,7 @@ def delete_question(question_id: int, db: Session = Depends(get_db)):
             .first()
         )
         if not still_used:
-            try:
-                os.remove(source_path)
-            except OSError:
-                pass
+            _delete_file(source_path)
 
 
 @app.get("/uploads/{filename}")
