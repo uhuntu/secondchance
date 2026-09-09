@@ -59,6 +59,7 @@ def question_to_dict(q: Question) -> dict:
         "correct_answer": q.correct_answer,
         "explanation": q.explanation,
         "similar_questions": q.similar_questions,
+        "original_redo": q.original_redo,
     }
 
 
@@ -315,6 +316,12 @@ def analyze_question_stream(question_id: int, db: Session = Depends(get_db)):
                         )
                     except (TypeError, ValueError):
                         question.similar_questions = "[]"
+                    try:
+                        question.original_redo = json.dumps(
+                            payload.get("原题重练", {}), ensure_ascii=False
+                        )
+                    except (TypeError, ValueError):
+                        question.original_redo = ""
                     db.commit()
                     db.refresh(question)
                     yield f"data: {json.dumps({'type': 'done', 'question': question_to_dict(question)}, ensure_ascii=False)}\n\n"
@@ -346,6 +353,12 @@ def analyze_question(question_id: int, db: Session = Depends(get_db)):
         )
     except (TypeError, ValueError):
         question.similar_questions = "[]"
+    try:
+        question.original_redo = json.dumps(
+            result.get("原题重练", {}), ensure_ascii=False
+        )
+    except (TypeError, ValueError):
+        question.original_redo = ""
     db.commit()
     db.refresh(question)
     return question_to_dict(question)

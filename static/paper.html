@@ -194,6 +194,10 @@
 </head>
 <body>
     <div class="toolbar">
+        <select id="paperMode" class="btn">
+            <option value="similar">举一反三练习卷</option>
+            <option value="original">AI 重绘原题</option>
+        </select>
         <button class="btn btn-primary" onclick="printPart('questions')">🖨️ 打印题目卷（给孩子）</button>
         <button class="btn" onclick="printPart('answers')">🖨️ 打印答案（家长留存）</button>
         <button class="btn" onclick="window.close()">关闭</button>
@@ -214,6 +218,7 @@
 
     <script>
         const paper = document.getElementById("paper");
+        const paperMode = document.getElementById("paperMode");
 
         function esc(s) {
             const d = document.createElement("div");
@@ -248,11 +253,32 @@
         }
 
         function buildPaper() {
+            const mode = paperMode.value;
             fetch("/api/questions")
                 .then((r) => r.json())
                 .then((list) => {
                     const sections = [];
                     list.filter((q) => q.analyzed).forEach((q) => {
+                        if (mode === "original") {
+                            let redo = {};
+                            try {
+                                redo = JSON.parse(q.original_redo || "{}");
+                            } catch (e) {
+                                redo = {};
+                            }
+                            const qt = (redo["题目"] || "").trim();
+                            if (!qt) return;
+                            const questions = figureRefFilter([
+                                { 题目: qt, 图: redo["图"] || "", 答案: (q.correct_answer || "").trim() },
+                            ]);
+                            if (questions.length) {
+                                sections.push({
+                                    kp: q.knowledge_point || "综合",
+                                    questions,
+                                });
+                            }
+                            return;
+                        }
                         let similar = [];
                         try {
                             similar = JSON.parse(q.similar_questions || "[]");
@@ -274,7 +300,7 @@
                     }
 
                     const today = new Date().toLocaleDateString("zh-CN");
-                    const title = "数学举一反三练习卷";
+                    const title = mode === "original" ? "数学 AI 重绘原题" : "数学举一反三练习卷";
                     let qNo = 0;
                     let bodyHtml = "";
                     const answers = [];
@@ -306,6 +332,7 @@
                 });
         }
 
+        paperMode.onchange = buildPaper;
         buildPaper();
     </script>
 </body>
