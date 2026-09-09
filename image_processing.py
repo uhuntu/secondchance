@@ -14,6 +14,7 @@ class PageResult:
     crop_paths: list[Path]
     mark_count: int
     page_detected: bool
+    crop_ranges: list[tuple[int, int]]
 
 
 def _order_points(points: np.ndarray) -> np.ndarray:
@@ -161,19 +162,25 @@ def _red_mark_centers(image: np.ndarray) -> list[int]:
     return merged
 
 
-def _crop_bands(image: np.ndarray, centers: list[int]) -> list[np.ndarray]:
+def _crop_ranges(height: int, centers: list[int]) -> list[tuple[int, int]]:
     if not centers:
-        return [image]
-    height, width = image.shape[:2]
+        return [(0, height)]
     padding = int(height * 0.025)
     boundaries = [0, *((a + b) // 2 for a, b in zip(centers, centers[1:])), height]
-    crops = []
+    ranges = []
     for index, center in enumerate(centers):
         top = min(max(0, boundaries[index] - padding), max(0, center - int(height * 0.13)))
         bottom = max(min(height, boundaries[index + 1] + padding), min(height, center + int(height * 0.06)))
         if bottom - top >= 100:
-            crops.append(image[top:bottom, :width])
-    return crops or [image]
+            ranges.append((top, bottom))
+    return ranges or [(0, height)]
+
+
+def crop_image_ranges(
+    image: np.ndarray, ranges: list[tuple[int, int]]
+) -> list[np.ndarray]:
+    height, width = image.shape[:2]
+    return [image[top:bottom, :width] for top, bottom in ranges]
 
 
 def process_page(
@@ -191,7 +198,8 @@ def process_page(
         else _warp_page(image)
     )
     centers = _red_mark_centers(corrected)
-    crops = _crop_bands(corrected, centers)
+    ranges = _crop_ranges(corrected.shape[0], centers)
+    crops = crop_image_ranges(corrected, ranges)
     corrected_path = output_dir / f"{stem}_page.jpg"
     cv2.imwrite(str(corrected_path), corrected, [cv2.IMWRITE_JPEG_QUALITY, 92])
     crop_paths = []
@@ -199,4 +207,4 @@ def process_page(
         path = output_dir / f"{stem}_q{index}.jpg"
         cv2.imwrite(str(path), crop, [cv2.IMWRITE_JPEG_QUALITY, 94])
         crop_paths.append(path)
-    return PageResult(corrected_path, crop_paths, len(centers), detected)
+    return PageResult(corrected_path, crop_paths, len(centers), detected, ranges)

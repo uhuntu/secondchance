@@ -78,6 +78,21 @@
         </div>
     </div>
 
+    <!-- 错题切割确认 -->
+    <div id="cropReviewModal" class="modal" hidden>
+        <div class="modal-content crop-review-content">
+            <h3>确认错题切割</h3>
+            <p class="hint">彩色框是候选错题。拖动框出新范围；点击下方标签可删除错误范围。</p>
+            <canvas id="cropReviewCanvas"></canvas>
+            <div id="cropRangeList" class="crop-range-list"></div>
+            <div class="modal-actions">
+                <button type="button" id="cropClearBtn" class="btn">清空范围</button>
+                <button type="button" id="cropConfirmBtn" class="btn btn-primary">确认保存</button>
+                <button type="button" id="cropCancelBtn" class="btn">取消</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 大图查看 -->
     <div id="lightbox" class="modal" hidden>
         <div class="lightbox-content">
@@ -86,6 +101,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260909-4"></script>
+    <script src="/static/app.js?v=20260909-6"></script>
 </body>
 </html>

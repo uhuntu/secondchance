@@ -493,7 +493,7 @@ manualCorrectApplyBtn.onclick = async () => {
     manualCorrectApplyBtn.textContent = "校正中…";
     try {
         const response = await fetch(
-            `/api/questions/${manualCorrectQuestion.id}/recorrect/manual`,
+            `/api/questions/${manualCorrectQuestion.id}/recorrect/preview`,
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -503,11 +503,7 @@ manualCorrectApplyBtn.onclick = async () => {
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.detail || "手动校正失败");
         manualCorrectModal.hidden = true;
-        renderList();
-        showMsg(
-            `原卷已按四点放平；切成 ${result.questions.length} 道错题。需要时请点“重新分析”。`,
-            true
-        );
+        openCropReview(result, manualCorrectQuestion);
     } catch (error) {
         showMsg(error.message, false);
     } finally {
@@ -516,24 +512,157 @@ manualCorrectApplyBtn.onclick = async () => {
     }
 };
 
-async function recorrectPage(q, button) {
-    const sourceHint = q.source_image_url
-        ? "将使用已保存的整张原卷重新放平并切割。"
-        : "这是旧记录，将先把当前照片备份为原图，再尝试放平和切割。";
-    if (!confirm(sourceHint + "切片数量可能变化，AI 分析不会自动重跑。是否继续？")) return;
-    button.disabled = true;
-    button.textContent = "校正中…";
+const cropReviewModal = document.getElementById("cropReviewModal");
+const cropReviewCanvas = document.getElementById("cropReviewCanvas");
+const cropReviewContext = cropReviewCanvas.getContext("2d");
+const cropRangeList = document.getElementById("cropRangeList");
+const cropConfirmBtn = document.getElementById("cropConfirmBtn");
+let cropReviewQuestion = null;
+let cropReviewImage = null;
+let cropReviewFilename = "";
+let cropRanges = [];
+let cropDragStart = null;
+
+function drawCropReview() {
+    if (!cropReviewImage) return;
+    cropReviewContext.clearRect(0, 0, cropReviewCanvas.width, cropReviewCanvas.height);
+    cropReviewContext.drawImage(
+        cropReviewImage, 0, 0, cropReviewCanvas.width, cropReviewCanvas.height
+    );
+    cropRanges.forEach((range, index) => {
+        const hue = (index * 67) % 360;
+        cropReviewContext.fillStyle = `hsla(${hue}, 90%, 55%, 0.2)`;
+        cropReviewContext.strokeStyle = `hsl(${hue}, 85%, 45%)`;
+        cropReviewContext.lineWidth = Math.max(3, cropReviewCanvas.width / 350);
+        cropReviewContext.fillRect(0, range[0], cropReviewCanvas.width, range[1] - range[0]);
+        cropReviewContext.strokeRect(1, range[0], cropReviewCanvas.width - 2, range[1] - range[0]);
+    });
+    cropRangeList.innerHTML = "";
+    cropRanges.forEach((range, index) => {
+        const chip = document.createElement("button");
+        chip.className = "crop-range-chip";
+        chip.textContent = `错题 ${index + 1} ×`;
+        chip.title = "删除这个候选范围";
+        chip.onclick = () => {
+            cropRanges.splice(index, 1);
+            drawCropReview();
+        };
+        cropRangeList.appendChild(chip);
+    });
+    cropConfirmBtn.disabled = cropRanges.length === 0;
+}
+
+function cropCanvasY(event) {
+    const rect = cropReviewCanvas.getBoundingClientRect();
+    return Math.max(
+        0,
+        Math.min(
+            cropReviewCanvas.height,
+            (event.clientY - rect.top) * cropReviewCanvas.height / rect.height
+        )
+    );
+}
+
+function openCropReview(result, question) {
+    cropReviewQuestion = question;
+    cropReviewFilename = result.preview_filename;
+    cropRanges = (result.ranges || []).map((range) => [range[0], range[1]]);
+    cropReviewImage = new Image();
+    cropReviewImage.onload = () => {
+        cropReviewCanvas.width = cropReviewImage.naturalWidth;
+        cropReviewCanvas.height = cropReviewImage.naturalHeight;
+        drawCropReview();
+    };
+    cropReviewImage.onerror = () => showMsg("无法载入放平预览", false);
+    cropReviewImage.src = result.preview_url;
+    cropReviewModal.hidden = false;
+}
+
+cropReviewCanvas.onpointerdown = (event) => {
+    cropDragStart = cropCanvasY(event);
+    cropReviewCanvas.setPointerCapture(event.pointerId);
+};
+cropReviewCanvas.onpointerup = (event) => {
+    if (cropDragStart === null) return;
+    const end = cropCanvasY(event);
+    const top = Math.round(Math.min(cropDragStart, end));
+    const bottom = Math.round(Math.max(cropDragStart, end));
+    cropDragStart = null;
+    if (bottom - top < 80) {
+        showMsg("框选范围太小，请从题目上方向下拖到题目底部", false);
+        return;
+    }
+    cropRanges.push([top, bottom]);
+    cropRanges.sort((a, b) => a[0] - b[0]);
+    drawCropReview();
+};
+
+document.getElementById("cropClearBtn").onclick = () => {
+    cropRanges = [];
+    drawCropReview();
+};
+
+function closeCropReview() {
+    cropReviewModal.hidden = true;
+    if (cropReviewFilename) {
+        fetch(`/api/recorrect/preview/${encodeURIComponent(cropReviewFilename)}`, {
+            method: "DELETE",
+        });
+    }
+    cropReviewFilename = "";
+}
+
+document.getElementById("cropCancelBtn").onclick = closeCropReview;
+cropConfirmBtn.onclick = async () => {
+    if (!cropReviewQuestion || !cropRanges.length) return;
+    cropConfirmBtn.disabled = true;
+    cropConfirmBtn.textContent = "保存中…";
     try {
-        const response = await fetch(`/api/questions/${q.id}/recorrect`, { method: "POST" });
+        const response = await fetch(
+            `/api/questions/${cropReviewQuestion.id}/recorrect/confirm`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    preview_filename: cropReviewFilename,
+                    ranges: cropRanges,
+                }),
+            }
+        );
         const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.detail || "重新校正失败");
+        if (!response.ok) throw new Error(result.detail || "保存切割结果失败");
+        cropReviewFilename = "";
+        cropReviewModal.hidden = true;
         renderList();
-        const pageText = result.page_detected ? "原卷已放平" : "未识别到完整纸张边界，已按原图切割";
-        showMsg(`${pageText}；更新 ${result.updated_count} 道，新增 ${result.created_count} 道，移除 ${result.removed_count} 道。需要时请点“重新分析”。`, true);
+        showMsg(`已按确认范围保存 ${result.questions.length} 道错题`, true);
     } catch (error) {
         showMsg(error.message, false);
+    } finally {
+        cropConfirmBtn.textContent = "确认保存";
+        cropConfirmBtn.disabled = cropRanges.length === 0;
+    }
+};
+
+async function recorrectPage(q, button) {
+    button.disabled = true;
+    button.textContent = "生成预览…";
+    try {
+        const response = await fetch(
+            `/api/questions/${q.id}/recorrect/preview`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ points: null }),
+            }
+        );
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || "生成校正预览失败");
+        openCropReview(result, q);
+    } catch (error) {
+        showMsg(error.message, false);
+    } finally {
         button.disabled = false;
-        button.textContent = q.source_image_url ? "重新校正原卷" : "校正已存照片";
+        button.textContent = "自动放平";
     }
 }
 

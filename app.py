@@ -4,6 +4,7 @@ import uuid
 from datetime import timezone
 from pathlib import Path
 
+import cv2
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from ai import analyze_image, analyze_image_events
 from database import Base, add_column_if_missing, engine, get_db
 from figure import render_stack
-from image_processing import process_page
+from image_processing import crop_image_ranges, process_page
 from models import Question
 
 BASE_DIR = Path(__file__).parent
@@ -202,6 +203,24 @@ def _recorrect_saved_page(
     if not source_path.is_file():
         raise HTTPException(404, "整张原卷文件已丢失，请重新上传照片")
 
+    stem = f"{source_path.stem}_recorrect_{uuid.uuid4().hex[:10]}"
+    try:
+        result = process_page(source_path, UPLOAD_DIR, stem, page_points)
+    except Exception as exc:
+        raise HTTPException(400, f"重新校正失败：{str(exc)[:200]}")
+    result.corrected_path.unlink(missing_ok=True)
+    return _replace_question_crops(
+        question, db, source_image_path, result.crop_paths, result
+    )
+
+
+def _replace_question_crops(
+    question: Question,
+    db: Session,
+    source_image_path: str,
+    crop_paths: list[Path],
+    result=None,
+):
     group = (
         db.query(Question)
         .filter(
@@ -211,14 +230,7 @@ def _recorrect_saved_page(
         .order_by(Question.id.asc())
         .all()
     )
-    stem = f"{source_path.stem}_recorrect_{uuid.uuid4().hex[:10]}"
-    try:
-        result = process_page(source_path, UPLOAD_DIR, stem, page_points)
-    except Exception as exc:
-        raise HTTPException(400, f"重新校正失败：{str(exc)[:200]}")
-    result.corrected_path.unlink(missing_ok=True)
-
-    new_paths = list(result.crop_paths)
+    new_paths = list(crop_paths)
     old_paths = [Path(item.image_path) for item in group]
     try:
         for item, crop_path in zip(group, new_paths):
@@ -251,8 +263,8 @@ def _recorrect_saved_page(
     )
     return {
         "questions": [question_to_dict(item) for item in refreshed],
-        "page_detected": result.page_detected,
-        "red_mark_count": result.mark_count,
+        "page_detected": result.page_detected if result else True,
+        "red_mark_count": result.mark_count if result else len(new_paths),
         "updated_count": min(len(group), len(new_paths)),
         "created_count": max(0, len(new_paths) - len(group)),
         "removed_count": max(0, len(group) - len(new_paths)),
@@ -260,7 +272,12 @@ def _recorrect_saved_page(
 
 
 class ManualCorrection(BaseModel):
-    points: list[list[float]]
+    points: list[list[float]] | None = None
+
+
+class CropConfirmation(BaseModel):
+    preview_filename: str
+    ranges: list[list[int]]
 
 
 @app.post("/api/questions/{question_id}/recorrect")
@@ -283,6 +300,119 @@ def manually_recorrect_saved_page(
     if not question:
         raise HTTPException(404, "错题不存在")
     return _recorrect_saved_page(question, db, payload.points)
+
+
+@app.post("/api/questions/{question_id}/recorrect/preview")
+def preview_manual_recorrection(
+    question_id: int,
+    payload: ManualCorrection,
+    db: Session = Depends(get_db),
+):
+    """Create a corrected-page preview without changing saved question crops."""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    if not question.source_image_path:
+        current_path = Path(question.image_path)
+        if not current_path.is_file():
+            raise HTTPException(404, "已保存的照片文件不存在")
+        source_path = UPLOAD_DIR / (
+            f"{uuid.uuid4().hex}_original{current_path.suffix.lower() or '.jpg'}"
+        )
+        try:
+            shutil.copy2(current_path, source_path)
+        except OSError as exc:
+            raise HTTPException(500, f"原图备份失败：{str(exc)[:200]}")
+        question.source_image_path = str(source_path)
+        db.commit()
+    else:
+        source_path = Path(question.source_image_path)
+    if not source_path.is_file():
+        raise HTTPException(404, "原卷图片不存在")
+    stem = f"{source_path.stem}_recorrect_preview_{uuid.uuid4().hex[:10]}"
+    try:
+        result = process_page(source_path, UPLOAD_DIR, stem, payload.points)
+    except Exception as exc:
+        raise HTTPException(400, f"放平预览失败：{str(exc)[:200]}")
+    for crop_path in result.crop_paths:
+        _delete_file(crop_path)
+    image = cv2.imread(str(result.corrected_path))
+    if image is None:
+        _delete_file(result.corrected_path)
+        raise HTTPException(500, "无法读取放平预览")
+    height, width = image.shape[:2]
+    return {
+        "preview_url": f"/uploads/{result.corrected_path.name}",
+        "preview_filename": result.corrected_path.name,
+        "width": width,
+        "height": height,
+        "ranges": [list(item) for item in result.crop_ranges],
+    }
+
+
+@app.post("/api/questions/{question_id}/recorrect/confirm")
+def confirm_manual_recrops(
+    question_id: int,
+    payload: CropConfirmation,
+    db: Session = Depends(get_db),
+):
+    """Save user-reviewed vertical crop ranges from a corrected-page preview."""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    if not question.source_image_path:
+        raise HTTPException(400, "该记录没有整张原卷")
+    source_path = Path(question.source_image_path)
+    filename = Path(payload.preview_filename).name
+    if (
+        filename != payload.preview_filename
+        or not filename.startswith(f"{source_path.stem}_recorrect_preview_")
+        or not filename.endswith("_page.jpg")
+    ):
+        raise HTTPException(400, "预览文件无效")
+    preview_path = UPLOAD_DIR / filename
+    image = cv2.imread(str(preview_path))
+    if image is None:
+        raise HTTPException(404, "预览已失效，请重新选取四角")
+    height, width = image.shape[:2]
+    ranges = []
+    for item in payload.ranges:
+        if len(item) != 2:
+            raise HTTPException(400, "切割范围格式错误")
+        top, bottom = (int(item[0]), int(item[1]))
+        if top < 0 or bottom > height or bottom - top < 80:
+            raise HTTPException(400, "切割范围无效或过小")
+        ranges.append((top, bottom))
+    if not ranges or len(ranges) > 30:
+        raise HTTPException(400, "请保留 1 到 30 个错题范围")
+    ranges.sort()
+    crops = crop_image_ranges(image, ranges)
+    stem = f"{source_path.stem}_reviewed_{uuid.uuid4().hex[:10]}"
+    crop_paths = []
+    for index, crop in enumerate(crops, 1):
+        path = UPLOAD_DIR / f"{stem}_q{index}.jpg"
+        cv2.imwrite(str(path), crop, [cv2.IMWRITE_JPEG_QUALITY, 94])
+        crop_paths.append(path)
+    try:
+        response = _replace_question_crops(
+            question, db, question.source_image_path, crop_paths
+        )
+    finally:
+        _delete_file(preview_path)
+    return response
+
+
+@app.delete("/api/recorrect/preview/{filename}", status_code=204)
+def discard_recorrection_preview(filename: str):
+    """Delete an unconfirmed temporary correction preview."""
+    safe_name = Path(filename).name
+    if (
+        safe_name != filename
+        or "_recorrect_preview_" not in safe_name
+        or not safe_name.endswith("_page.jpg")
+    ):
+        raise HTTPException(400, "预览文件无效")
+    _delete_file(UPLOAD_DIR / safe_name)
 
 
 class QuestionUpdate(BaseModel):
