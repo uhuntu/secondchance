@@ -235,6 +235,14 @@ def _replace_question_crops(
     try:
         for item, crop_path in zip(group, new_paths):
             item.image_path = str(crop_path)
+            item.knowledge_point = ""
+            item.question_text = ""
+            item.child_answer = ""
+            item.error_analysis = ""
+            item.correct_answer = ""
+            item.explanation = ""
+            item.similar_questions = ""
+            item.original_redo = ""
         for crop_path in new_paths[len(group):]:
             db.add(
                 Question(
