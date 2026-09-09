@@ -36,6 +36,7 @@ for _col, _ddl in [
     ("similar_questions", "TEXT DEFAULT ''"),
     ("original_redo", "TEXT DEFAULT ''"),
     ("source_image_path", "TEXT DEFAULT ''"),
+    ("answer_masks", "TEXT DEFAULT ''"),
 ]:
     add_column_if_missing("questions", _col, _ddl)
 
@@ -58,6 +59,7 @@ def question_to_dict(q: Question) -> dict:
             f"/uploads/{Path(q.source_image_path).name}" if q.source_image_path else ""
         ),
         "crop_reviewed": "_reviewed_" in Path(q.image_path).name,
+        "answer_masks": q.answer_masks or "[]",
         "created_at": created_at.isoformat(),
         "analyzed": bool(q.question_text or q.error_analysis),
         "question_text": q.question_text,
@@ -244,6 +246,7 @@ def _replace_question_crops(
             item.explanation = ""
             item.similar_questions = ""
             item.original_redo = ""
+            item.answer_masks = ""
         for crop_path in new_paths[len(group):]:
             db.add(
                 Question(
@@ -446,6 +449,10 @@ class QuestionUpdate(BaseModel):
     note: str | None = None
 
 
+class AnswerMasksUpdate(BaseModel):
+    masks: list[list[float]]
+
+
 @app.get("/api/questions/{question_id}")
 def get_question(question_id: int, db: Session = Depends(get_db)):
     question = db.get(Question, question_id)
@@ -469,6 +476,40 @@ def update_question(
         question.knowledge_point = payload.knowledge_point.strip()
     if payload.note is not None:
         question.note = payload.note.strip()
+    db.commit()
+    db.refresh(question)
+    return question_to_dict(question)
+
+
+@app.put("/api/questions/{question_id}/answer-masks")
+def update_answer_masks(
+    question_id: int,
+    payload: AnswerMasksUpdate,
+    db: Session = Depends(get_db),
+):
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    masks = []
+    for item in payload.masks:
+        if len(item) != 4:
+            raise HTTPException(400, "遮挡区域格式错误")
+        x, y, width, height = (float(value) for value in item)
+        if (
+            x < 0
+            or y < 0
+            or width <= 0
+            or height <= 0
+            or x + width > 1000
+            or y + height > 1000
+        ):
+            raise HTTPException(400, "遮挡区域超出图片范围")
+        if width < 5 or height < 5:
+            raise HTTPException(400, "遮挡区域太小")
+        masks.append([round(x, 2), round(y, 2), round(width, 2), round(height, 2)])
+    if len(masks) > 50:
+        raise HTTPException(400, "单题最多设置 50 个遮挡区域")
+    question.answer_masks = json.dumps(masks, ensure_ascii=False)
     db.commit()
     db.refresh(question)
     return question_to_dict(question)

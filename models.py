@@ -14,6 +14,7 @@ class Question(Base):
     note = Column(Text, default="")
     image_path = Column(String(300), nullable=False)
     source_image_path = Column(String(300), default="")  # 自动切题前的整页原图
+    answer_masks = Column(Text, default="")       # 练习卷答案遮挡区域（JSON）
     # AI 分析结果
     question_text = Column(Text, default="")      # 识别出的题目文字
     child_answer = Column(Text, default="")       # 孩子的作答

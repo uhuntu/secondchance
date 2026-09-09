@@ -373,6 +373,19 @@ function renderList() {
                         });
                 };
                 actions.appendChild(analyzeBtn);
+                if (q.crop_reviewed) {
+                    const maskBtn = document.createElement("button");
+                    maskBtn.className = "btn btn-small";
+                    let savedMasks = [];
+                    try {
+                        savedMasks = JSON.parse(q.answer_masks || "[]");
+                    } catch (e) {
+                        savedMasks = [];
+                    }
+                    maskBtn.textContent = savedMasks.length ? `遮挡答案（${savedMasks.length}）` : "遮挡答案";
+                    maskBtn.onclick = () => openAnswerMask(q);
+                    actions.appendChild(maskBtn);
+                }
                 const editBtn = document.createElement("button");
                 editBtn.className = "btn btn-small";
                 editBtn.textContent = "编辑";
@@ -639,6 +652,128 @@ cropConfirmBtn.onclick = async () => {
     } finally {
         cropConfirmBtn.textContent = "确认保存";
         cropConfirmBtn.disabled = cropRanges.length === 0;
+    }
+};
+
+const answerMaskModal = document.getElementById("answerMaskModal");
+const answerMaskCanvas = document.getElementById("answerMaskCanvas");
+const answerMaskContext = answerMaskCanvas.getContext("2d");
+const answerMaskList = document.getElementById("answerMaskList");
+const answerMaskSaveBtn = document.getElementById("answerMaskSaveBtn");
+let answerMaskQuestion = null;
+let answerMaskImage = null;
+let answerMasks = [];
+let answerMaskStart = null;
+
+function maskCanvasPoint(event) {
+    const rect = answerMaskCanvas.getBoundingClientRect();
+    return [
+        Math.max(0, Math.min(answerMaskCanvas.width, (event.clientX - rect.left) * answerMaskCanvas.width / rect.width)),
+        Math.max(0, Math.min(answerMaskCanvas.height, (event.clientY - rect.top) * answerMaskCanvas.height / rect.height)),
+    ];
+}
+
+function drawAnswerMasks() {
+    if (!answerMaskImage) return;
+    answerMaskContext.clearRect(0, 0, answerMaskCanvas.width, answerMaskCanvas.height);
+    answerMaskContext.drawImage(answerMaskImage, 0, 0);
+    answerMasks.forEach((mask, index) => {
+        const x = mask[0] * answerMaskCanvas.width / 1000;
+        const y = mask[1] * answerMaskCanvas.height / 1000;
+        const width = mask[2] * answerMaskCanvas.width / 1000;
+        const height = mask[3] * answerMaskCanvas.height / 1000;
+        answerMaskContext.fillStyle = "rgba(255,255,255,0.82)";
+        answerMaskContext.strokeStyle = "#f56c6c";
+        answerMaskContext.lineWidth = Math.max(2, answerMaskCanvas.width / 400);
+        answerMaskContext.fillRect(x, y, width, height);
+        answerMaskContext.strokeRect(x, y, width, height);
+    });
+    answerMaskList.innerHTML = "";
+    answerMasks.forEach((mask, index) => {
+        const chip = document.createElement("button");
+        chip.className = "crop-range-chip";
+        chip.textContent = `遮挡 ${index + 1} ×`;
+        chip.onclick = () => {
+            answerMasks.splice(index, 1);
+            drawAnswerMasks();
+        };
+        answerMaskList.appendChild(chip);
+    });
+}
+
+function openAnswerMask(q) {
+    answerMaskQuestion = q;
+    try {
+        answerMasks = JSON.parse(q.answer_masks || "[]");
+    } catch (e) {
+        answerMasks = [];
+    }
+    answerMaskImage = new Image();
+    answerMaskImage.onload = () => {
+        answerMaskCanvas.width = answerMaskImage.naturalWidth;
+        answerMaskCanvas.height = answerMaskImage.naturalHeight;
+        drawAnswerMasks();
+    };
+    answerMaskImage.onerror = () => showMsg("无法载入错题切片", false);
+    answerMaskImage.src = q.image_url;
+    answerMaskModal.hidden = false;
+}
+
+answerMaskCanvas.onpointerdown = (event) => {
+    answerMaskStart = maskCanvasPoint(event);
+    answerMaskCanvas.setPointerCapture(event.pointerId);
+};
+answerMaskCanvas.onpointerup = (event) => {
+    if (!answerMaskStart) return;
+    const end = maskCanvasPoint(event);
+    const left = Math.min(answerMaskStart[0], end[0]);
+    const top = Math.min(answerMaskStart[1], end[1]);
+    const width = Math.abs(end[0] - answerMaskStart[0]);
+    const height = Math.abs(end[1] - answerMaskStart[1]);
+    answerMaskStart = null;
+    if (width < 8 || height < 8) {
+        showMsg("遮挡框太小，请重新拖动", false);
+        return;
+    }
+    answerMasks.push([
+        left * 1000 / answerMaskCanvas.width,
+        top * 1000 / answerMaskCanvas.height,
+        width * 1000 / answerMaskCanvas.width,
+        height * 1000 / answerMaskCanvas.height,
+    ]);
+    drawAnswerMasks();
+};
+
+document.getElementById("answerMaskClearBtn").onclick = () => {
+    answerMasks = [];
+    drawAnswerMasks();
+};
+document.getElementById("answerMaskCancelBtn").onclick = () => {
+    answerMaskModal.hidden = true;
+};
+answerMaskSaveBtn.onclick = async () => {
+    if (!answerMaskQuestion) return;
+    answerMaskSaveBtn.disabled = true;
+    answerMaskSaveBtn.textContent = "保存中…";
+    try {
+        const response = await fetch(
+            `/api/questions/${answerMaskQuestion.id}/answer-masks`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ masks: answerMasks }),
+            }
+        );
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || "保存遮挡失败");
+        answerMaskModal.hidden = true;
+        renderList();
+        showMsg("答案遮挡已保存，只会应用到切片练习卷", true);
+    } catch (error) {
+        showMsg(error.message, false);
+    } finally {
+        answerMaskSaveBtn.disabled = false;
+        answerMaskSaveBtn.textContent = "保存遮挡";
     }
 };
 
