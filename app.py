@@ -346,6 +346,8 @@ def preview_manual_recorrection(
         "preview_filename": result.corrected_path.name,
         "width": width,
         "height": height,
+        "page_detected": result.page_detected,
+        "red_mark_count": result.mark_count,
         "ranges": [list(item) for item in result.crop_ranges],
     }
 

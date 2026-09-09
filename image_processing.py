@@ -67,6 +67,12 @@ def _warp_page(image: np.ndarray) -> tuple[np.ndarray, bool]:
     if page is None:
         return image, False
     tl, tr, br, bl = _order_points(page)
+    page_area = abs(cv2.contourArea(np.array([tl, tr, br, bl], dtype="float32")))
+    # A contour covering virtually the whole photo is usually the image frame,
+    # not the paper. Treat it as a failed detection so the UI can request four
+    # manual corners instead of pretending that the page was straightened.
+    if page_area >= width * height * 0.94:
+        return image, False
     target_width = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
     target_height = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
     if target_width < 300 or target_height < 300:

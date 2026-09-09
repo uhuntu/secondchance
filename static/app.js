@@ -531,7 +531,7 @@ function drawCropReview() {
     );
     cropRanges.forEach((range, index) => {
         const hue = (index * 67) % 360;
-        cropReviewContext.fillStyle = `hsla(${hue}, 90%, 55%, 0.2)`;
+        cropReviewContext.fillStyle = `hsla(${hue}, 90%, 55%, 0.09)`;
         cropReviewContext.strokeStyle = `hsl(${hue}, 85%, 45%)`;
         cropReviewContext.lineWidth = Math.max(3, cropReviewCanvas.width / 350);
         cropReviewContext.fillRect(0, range[0], cropReviewCanvas.width, range[1] - range[0]);
@@ -657,6 +657,14 @@ async function recorrectPage(q, button) {
         );
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.detail || "生成校正预览失败");
+        if (!result.page_detected) {
+            fetch(`/api/recorrect/preview/${encodeURIComponent(result.preview_filename)}`, {
+                method: "DELETE",
+            });
+            showMsg("没有可靠识别出纸张四角，请在原图上手动选择四角", false);
+            openManualCorrect(q);
+            return;
+        }
         openCropReview(result, q);
     } catch (error) {
         showMsg(error.message, false);

@@ -55,7 +55,18 @@ def test_manual_corners_warp_page_before_cropping():
         assert 650 <= corrected.shape[0] <= 800
 
 
+def test_photo_frame_is_not_mistaken_for_paper():
+    photo = np.full((900, 700, 3), 245, dtype=np.uint8)
+    cv2.rectangle(photo, (1, 1), (698, 898), (20, 20, 20), 3)
+    with TemporaryDirectory() as directory:
+        source = Path(directory) / "frame.jpg"
+        cv2.imwrite(str(source), photo)
+        result = process_page(source, Path(directory), "frame")
+        assert not result.page_detected
+
+
 if __name__ == "__main__":
     test_red_marks_create_question_bands()
     test_manual_corners_warp_page_before_cropping()
+    test_photo_frame_is_not_mistaken_for_paper()
     print("image processing tests passed")
