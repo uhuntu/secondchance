@@ -1,6 +1,7 @@
 import json
 import shutil
 import uuid
+from datetime import timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -42,6 +43,10 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 def question_to_dict(q: Question) -> dict:
+    created_at = q.created_at
+    if created_at.tzinfo is None:
+        # SQLite drops timezone metadata; stored timestamps are UTC.
+        created_at = created_at.replace(tzinfo=timezone.utc)
     return {
         "id": q.id,
         "subject": q.subject,
@@ -51,7 +56,7 @@ def question_to_dict(q: Question) -> dict:
         "source_image_url": (
             f"/uploads/{Path(q.source_image_path).name}" if q.source_image_path else ""
         ),
-        "created_at": q.created_at.isoformat(),
+        "created_at": created_at.isoformat(),
         "analyzed": bool(q.question_text or q.error_analysis),
         "question_text": q.question_text,
         "child_answer": q.child_answer,
