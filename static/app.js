@@ -305,6 +305,13 @@ function renderList() {
                 recorrectBtn.textContent = q.source_image_url ? "重新校正原卷" : "校正已存照片";
                 recorrectBtn.onclick = () => recorrectPage(q, recorrectBtn);
                 actions.appendChild(recorrectBtn);
+                if (q.source_image_url) {
+                    const sourceBtn = document.createElement("button");
+                    sourceBtn.className = "btn btn-small";
+                    sourceBtn.textContent = "查看原卷";
+                    sourceBtn.onclick = () => openLightbox(q.source_image_url);
+                    actions.appendChild(sourceBtn);
+                }
                 const editBtn = document.createElement("button");
                 editBtn.className = "btn btn-small";
                 editBtn.textContent = "编辑";
@@ -322,6 +329,11 @@ function renderList() {
                 questionList.appendChild(card);
             });
         });
+}
+
+function openLightbox(imageUrl) {
+    document.getElementById("lightboxImg").src = imageUrl;
+    document.getElementById("lightbox").hidden = false;
 }
 
 async function recorrectPage(q, button) {
