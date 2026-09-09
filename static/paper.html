@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>举一反三练习卷</title>
+    <title>数学错题练习卷</title>
     <style>
         * {
             box-sizing: border-box;
@@ -120,6 +120,27 @@
             margin: 6px 0 2px;
         }
 
+        .crop-question {
+            display: block;
+            break-inside: avoid;
+            page-break-inside: avoid;
+            margin-bottom: 14px;
+        }
+
+        .crop-question .q-num {
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .crop-img {
+            display: block;
+            width: 100%;
+            max-height: 78mm;
+            object-fit: contain;
+            object-position: left top;
+            border: 1px solid #ddd;
+        }
+
         .answer-blank {
             border-bottom: 1px solid #999;
             display: inline-block;
@@ -195,6 +216,7 @@
 <body>
     <div class="toolbar">
         <select id="paperMode" class="btn">
+            <option value="cropped">错题切片原卷（推荐）</option>
             <option value="similar">举一反三练习卷</option>
             <option value="original">AI 重绘原题</option>
         </select>
@@ -258,7 +280,19 @@
                 .then((r) => r.json())
                 .then((list) => {
                     const sections = [];
-                    list.filter((q) => q.analyzed).forEach((q) => {
+                    list.forEach((q) => {
+                        if (mode === "cropped") {
+                            if (!q.crop_reviewed) return;
+                            sections.push({
+                                kp: q.knowledge_point || "未分类错题",
+                                questions: [{
+                                    图片: q.image_url,
+                                    答案: (q.correct_answer || "").trim(),
+                                }],
+                            });
+                            return;
+                        }
+                        if (!q.analyzed) return;
                         if (mode === "original") {
                             let redo = {};
                             try {
@@ -300,7 +334,9 @@
                     }
 
                     const today = new Date().toLocaleDateString("zh-CN");
-                    const title = mode === "original" ? "数学 AI 重绘原题" : "数学举一反三练习卷";
+                    const title = mode === "cropped"
+                        ? "数学错题重练卷"
+                        : (mode === "original" ? "数学 AI 重绘原题" : "数学举一反三练习卷");
                     let qNo = 0;
                     let bodyHtml = "";
                     const answers = [];
@@ -309,6 +345,11 @@
                         bodyHtml += `<div class="kp-section"><div class="kp-title">【${esc(sec.kp)}】</div>`;
                         sec.questions.forEach((s) => {
                             qNo++;
+                            if (s["图片"]) {
+                                bodyHtml += `<div class="question crop-question"><span class="q-num">${qNo}.</span><img class="crop-img" src="${esc(s["图片"])}" alt="错题切片"></div>`;
+                                if (s["答案"]) answers.push({ no: qNo, ans: s["答案"] });
+                                return;
+                            }
                             const qt = (s["题目"] || "").trim();
                             bodyHtml += `<div class="question"><span class="q-num">${qNo}.</span><span class="q-text">${esc(qt)}${figHtml(s["图"])}　<span class="answer-blank"></span></span></div>`;
                             answers.push({ no: qNo, ans: (s["答案"] || "").trim() });
@@ -316,15 +357,17 @@
                         bodyHtml += "</div>";
                     });
 
-                    let ansHtml = '<div class="answers-page"><div class="answers-title">参考答案</div>';
+                    let ansHtml = answers.length
+                        ? '<div class="answers-page"><div class="answers-title">参考答案</div>'
+                        : "";
                     answers.forEach((a) => {
                         ansHtml += `<div class="answer-item"><span class="q-num">${a.no}.</span><span>${esc(a.ans)}</span></div>`;
                     });
-                    ansHtml += "</div>";
+                    if (answers.length) ansHtml += "</div>";
 
                     paper.innerHTML = `
                         <div class="paper-title">${title}</div>
-                        <div class="paper-subtitle">依据错题本自动生成 · 人教版五年级</div>
+                        <div class="paper-subtitle">${mode === "cropped" ? "由已确认的错题切片组成" : "依据错题本自动生成 · 人教版五年级"}</div>
                         <div class="paper-meta"><span>姓名：＿＿＿＿＿＿</span><span>日期：${today}</span><span>共 ${qNo} 题</span></div>
                         <div id="questionPart">${bodyHtml}</div>
                         ${ansHtml}

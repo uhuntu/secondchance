@@ -57,6 +57,7 @@ def question_to_dict(q: Question) -> dict:
         "source_image_url": (
             f"/uploads/{Path(q.source_image_path).name}" if q.source_image_path else ""
         ),
+        "crop_reviewed": "_reviewed_" in Path(q.image_path).name,
         "created_at": created_at.isoformat(),
         "analyzed": bool(q.question_text or q.error_analysis),
         "question_text": q.question_text,
