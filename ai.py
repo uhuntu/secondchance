@@ -40,6 +40,18 @@ PROMPT = """你是一位耐心细致的小学数学老师，擅长辅导五年�
 
 注意"原题重练"：把照片中的原题整理成一道干净的、可直接打印给孩子重做的题目。不得包含孩子的作答、红笔批改等痕迹；数字、条件、图形必须与照片完全一致，不得改动。"图"字段规则与上面第 7 条相同（立体图形用 {"立体": [[...]]} 高度图，平面视图用字符画字符串）；纯文字计算题可省略"图"字段。"""
 
+CROP_PROMPT = """你是小学数学试卷版面识别助手。请检查这张已经校正方向的完整试卷照片，找出被老师用红叉、红圈叉或明确订正标记判错的题目。
+
+要求：
+1. 不要把红色对勾、分数、日期、页眉批注当成错题。
+2. 同一道题上的多个红色痕迹必须合并成一个区域。
+3. 每个区域必须包含完整题干、相关图形、孩子作答和全部选项；不要带入相邻题目。
+4. 坐标使用图片高度的千分比：最顶部为 0，最底部为 1000。
+5. 只输出 JSON，不要输出解释或 Markdown。
+
+输出格式：
+{"错题区域":[{"题号":"1","上":120,"下":310},{"题号":"3","上":430,"下":620}]}"""
+
 
 def get_api_key() -> str | None:
     key = os.environ.get("MOONSHOT_API_KEY")
@@ -68,7 +80,7 @@ def _encode_image(image_path: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def analyze_image_events(image_path: str):
+def analyze_image_events(image_path: str, prompt: str = PROMPT):
     """生成器：逐段产出 ("reasoning", 思考片段) / ("content", 结果片段)，
     最后产出 ("result", 解析后的字段 dict)。
     不做全局串行：账号并发超限会返回 429，由调用方重试，
@@ -84,7 +96,7 @@ def analyze_image_events(image_path: str):
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": PROMPT},
+                    {"type": "text", "text": prompt},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/jpeg;base64,{_encode_image(image_path)}"},
@@ -178,3 +190,28 @@ def analyze_image(image_path: str) -> dict:
     if result is None:
         raise RuntimeError("模型未返回分析结果")
     return result
+
+
+def identify_wrong_question_ranges(image_path: str, image_height: int) -> list[tuple[int, int]]:
+    """Ask the vision model for complete wrong-question vertical regions."""
+    result = None
+    for kind, payload in analyze_image_events(image_path, CROP_PROMPT):
+        if kind == "result":
+            result = payload
+    if not isinstance(result, dict):
+        raise RuntimeError("模型未返回题目区域")
+    ranges = []
+    for item in result.get("错题区域", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            top = max(0, min(1000, float(item["上"])))
+            bottom = max(0, min(1000, float(item["下"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        pixel_top = round(top * image_height / 1000)
+        pixel_bottom = round(bottom * image_height / 1000)
+        if pixel_bottom - pixel_top >= 80:
+            ranges.append((pixel_top, pixel_bottom))
+    ranges.sort()
+    return ranges

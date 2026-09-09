@@ -485,7 +485,7 @@ document.getElementById("manualCorrectCancelBtn").onclick = () => {
 manualCorrectApplyBtn.onclick = async () => {
     if (!manualCorrectQuestion || manualCorrectPoints.length !== 4) return;
     manualCorrectApplyBtn.disabled = true;
-    manualCorrectApplyBtn.textContent = "校正中…";
+    manualCorrectApplyBtn.textContent = "AI 识别题目中…";
     try {
         const response = await fetch(
             `/api/questions/${manualCorrectQuestion.id}/recorrect/preview`,
@@ -511,6 +511,7 @@ const cropReviewModal = document.getElementById("cropReviewModal");
 const cropReviewCanvas = document.getElementById("cropReviewCanvas");
 const cropReviewContext = cropReviewCanvas.getContext("2d");
 const cropRangeList = document.getElementById("cropRangeList");
+const cropReviewHint = document.getElementById("cropReviewHint");
 const cropConfirmBtn = document.getElementById("cropConfirmBtn");
 let cropReviewQuestion = null;
 let cropReviewImage = null;
@@ -562,6 +563,9 @@ function openCropReview(result, question) {
     cropReviewQuestion = question;
     cropReviewFilename = result.preview_filename;
     cropRanges = (result.ranges || []).map((range) => [range[0], range[1]]);
+    cropReviewHint.textContent = result.range_source === "ai"
+        ? "彩色框由 AI 按完整题目生成。请核对后保存；可删除错误框，或在图片上拖动新增范围。"
+        : (result.warning || "当前显示红笔候选范围，请仔细核对后再保存。");
     cropReviewImage = new Image();
     cropReviewImage.onload = () => {
         cropReviewCanvas.width = cropReviewImage.naturalWidth;
@@ -640,7 +644,7 @@ cropConfirmBtn.onclick = async () => {
 
 async function recorrectPage(q, button) {
     button.disabled = true;
-    button.textContent = "生成预览…";
+    button.textContent = "校正并识别…";
     try {
         const response = await fetch(
             `/api/questions/${q.id}/recorrect/preview`,

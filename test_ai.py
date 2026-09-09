@@ -52,6 +52,23 @@ def test_transient_connection_error_is_retried():
     assert events[-1][1]["正确答案"] == "2"
 
 
+def test_wrong_question_ranges_are_scaled_and_filtered():
+    original_events = ai.analyze_image_events
+    ai.analyze_image_events = lambda *_: iter([
+        ("result", {"错题区域": [
+            {"题号": "1", "上": 100, "下": 300},
+            {"题号": "x", "上": 500, "下": 510},
+            {"题号": "3", "上": -20, "下": 1100},
+        ]})
+    ])
+    try:
+        ranges = ai.identify_wrong_question_ranges("unused.jpg", 1000)
+    finally:
+        ai.analyze_image_events = original_events
+    assert ranges == [(0, 1000), (100, 300)]
+
+
 if __name__ == "__main__":
     test_transient_connection_error_is_retried()
+    test_wrong_question_ranges_are_scaled_and_filtered()
     print("AI retry tests passed")

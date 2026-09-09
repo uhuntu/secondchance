@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ai import analyze_image, analyze_image_events
+from ai import analyze_image, analyze_image_events, identify_wrong_question_ranges
 from database import Base, add_column_if_missing, engine, get_db
 from figure import render_stack
 from image_processing import crop_image_ranges, process_page
@@ -341,6 +341,18 @@ def preview_manual_recorrection(
         _delete_file(result.corrected_path)
         raise HTTPException(500, "无法读取放平预览")
     height, width = image.shape[:2]
+    range_source = "red"
+    ai_warning = ""
+    if result.page_detected:
+        try:
+            ai_ranges = identify_wrong_question_ranges(str(result.corrected_path), height)
+            if ai_ranges:
+                result.crop_ranges = ai_ranges
+                range_source = "ai"
+            else:
+                ai_warning = "AI 未找到明确错题，已显示红笔候选范围"
+        except Exception as exc:
+            ai_warning = f"AI 边界识别失败，已显示红笔候选范围：{str(exc)[:120]}"
     return {
         "preview_url": f"/uploads/{result.corrected_path.name}",
         "preview_filename": result.corrected_path.name,
@@ -348,6 +360,8 @@ def preview_manual_recorrection(
         "height": height,
         "page_detected": result.page_detected,
         "red_mark_count": result.mark_count,
+        "range_source": range_source,
+        "warning": ai_warning,
         "ranges": [list(item) for item in result.crop_ranges],
     }
 
