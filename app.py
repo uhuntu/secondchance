@@ -172,12 +172,11 @@ async def import_page(
     }
 
 
-@app.post("/api/questions/{question_id}/recorrect")
-def recorrect_saved_page(question_id: int, db: Session = Depends(get_db)):
-    """Re-run page correction/cropping for every question from one saved source page."""
-    question = db.get(Question, question_id)
-    if not question:
-        raise HTTPException(404, "错题不存在")
+def _recorrect_saved_page(
+    question: Question,
+    db: Session,
+    page_points: list[list[float]] | None = None,
+):
     source_image_path = question.source_image_path
     if not source_image_path:
         current_path = Path(question.image_path)
@@ -209,7 +208,7 @@ def recorrect_saved_page(question_id: int, db: Session = Depends(get_db)):
     )
     stem = f"{source_path.stem}_recorrect_{uuid.uuid4().hex[:10]}"
     try:
-        result = process_page(source_path, UPLOAD_DIR, stem)
+        result = process_page(source_path, UPLOAD_DIR, stem, page_points)
     except Exception as exc:
         raise HTTPException(400, f"重新校正失败：{str(exc)[:200]}")
     result.corrected_path.unlink(missing_ok=True)
@@ -253,6 +252,32 @@ def recorrect_saved_page(question_id: int, db: Session = Depends(get_db)):
         "created_count": max(0, len(new_paths) - len(group)),
         "removed_count": max(0, len(group) - len(new_paths)),
     }
+
+
+class ManualCorrection(BaseModel):
+    points: list[list[float]]
+
+
+@app.post("/api/questions/{question_id}/recorrect")
+def recorrect_saved_page(question_id: int, db: Session = Depends(get_db)):
+    """Automatically re-run correction/cropping for one saved source page."""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    return _recorrect_saved_page(question, db)
+
+
+@app.post("/api/questions/{question_id}/recorrect/manual")
+def manually_recorrect_saved_page(
+    question_id: int,
+    payload: ManualCorrection,
+    db: Session = Depends(get_db),
+):
+    """Correct/crop one saved page using four user-selected paper corners."""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    return _recorrect_saved_page(question, db, payload.points)
 
 
 class QuestionUpdate(BaseModel):

@@ -75,6 +75,43 @@ def _warp_page(image: np.ndarray) -> tuple[np.ndarray, bool]:
     return cv2.warpPerspective(image, matrix, (target_width, target_height)), True
 
 
+def _warp_page_from_points(
+    image: np.ndarray, points: list[list[float]]
+) -> tuple[np.ndarray, bool]:
+    if len(points) != 4 or any(len(point) != 2 for point in points):
+        raise ValueError("必须选择四个纸张角点")
+    height, width = image.shape[:2]
+    page = np.asarray(points, dtype="float32")
+    if not np.isfinite(page).all():
+        raise ValueError("纸张角点无效")
+    if (
+        (page[:, 0] < 0).any()
+        or (page[:, 0] >= width).any()
+        or (page[:, 1] < 0).any()
+        or (page[:, 1] >= height).any()
+    ):
+        raise ValueError("纸张角点超出照片范围")
+    ordered = _order_points(page)
+    if abs(cv2.contourArea(ordered)) < width * height * 0.08:
+        raise ValueError("选择的纸张区域太小，请重新选择四个角")
+    tl, tr, br, bl = ordered
+    target_width = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
+    target_height = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
+    if target_width < 300 or target_height < 300:
+        raise ValueError("选择的纸张区域太小，请重新选择四个角")
+    destination = np.array(
+        [
+            [0, 0],
+            [target_width - 1, 0],
+            [target_width - 1, target_height - 1],
+            [0, target_height - 1],
+        ],
+        dtype="float32",
+    )
+    matrix = cv2.getPerspectiveTransform(ordered, destination)
+    return cv2.warpPerspective(image, matrix, (target_width, target_height)), True
+
+
 def _red_mark_centers(image: np.ndarray) -> list[int]:
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     red = cv2.bitwise_or(cv2.inRange(hsv, (0, 75, 60), (14, 255, 255)), cv2.inRange(hsv, (165, 75, 60), (180, 255, 255)))
@@ -139,11 +176,20 @@ def _crop_bands(image: np.ndarray, centers: list[int]) -> list[np.ndarray]:
     return crops or [image]
 
 
-def process_page(source: Path, output_dir: Path, stem: str) -> PageResult:
+def process_page(
+    source: Path,
+    output_dir: Path,
+    stem: str,
+    page_points: list[list[float]] | None = None,
+) -> PageResult:
     """Correct a photographed page and save one crop for each detected red-mark band."""
     with Image.open(source) as pil:
         image = cv2.cvtColor(np.asarray(ImageOps.exif_transpose(pil).convert("RGB")), cv2.COLOR_RGB2BGR)
-    corrected, detected = _warp_page(image)
+    corrected, detected = (
+        _warp_page_from_points(image, page_points)
+        if page_points is not None
+        else _warp_page(image)
+    )
     centers = _red_mark_centers(corrected)
     crops = _crop_bands(corrected, centers)
     corrected_path = output_dir / f"{stem}_page.jpg"

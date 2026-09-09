@@ -305,6 +305,11 @@ function renderList() {
                 recorrectBtn.textContent = q.source_image_url ? "重新校正原卷" : "校正已存照片";
                 recorrectBtn.onclick = () => recorrectPage(q, recorrectBtn);
                 actions.appendChild(recorrectBtn);
+                const manualBtn = document.createElement("button");
+                manualBtn.className = "btn btn-small";
+                manualBtn.textContent = "手动放平";
+                manualBtn.onclick = () => openManualCorrect(q);
+                actions.appendChild(manualBtn);
                 if (q.source_image_url) {
                     const sourceBtn = document.createElement("button");
                     sourceBtn.className = "btn btn-small";
@@ -335,6 +340,117 @@ function openLightbox(imageUrl) {
     document.getElementById("lightboxImg").src = imageUrl;
     document.getElementById("lightbox").hidden = false;
 }
+
+const manualCorrectModal = document.getElementById("manualCorrectModal");
+const manualCorrectCanvas = document.getElementById("manualCorrectCanvas");
+const manualCorrectHint = document.getElementById("manualCorrectHint");
+const manualCorrectApplyBtn = document.getElementById("manualCorrectApplyBtn");
+const manualCorrectContext = manualCorrectCanvas.getContext("2d");
+const cornerNames = ["左上角", "右上角", "右下角", "左下角"];
+let manualCorrectQuestion = null;
+let manualCorrectImage = null;
+let manualCorrectPoints = [];
+
+function redrawManualCorrect() {
+    if (!manualCorrectImage) return;
+    manualCorrectContext.clearRect(0, 0, manualCorrectCanvas.width, manualCorrectCanvas.height);
+    manualCorrectContext.drawImage(
+        manualCorrectImage, 0, 0, manualCorrectCanvas.width, manualCorrectCanvas.height
+    );
+    if (manualCorrectPoints.length) {
+        manualCorrectContext.strokeStyle = "#f44336";
+        manualCorrectContext.fillStyle = "#f44336";
+        manualCorrectContext.lineWidth = Math.max(3, manualCorrectCanvas.width / 300);
+        manualCorrectContext.beginPath();
+        manualCorrectPoints.forEach((point, index) => {
+            if (index === 0) manualCorrectContext.moveTo(point[0], point[1]);
+            else manualCorrectContext.lineTo(point[0], point[1]);
+        });
+        if (manualCorrectPoints.length === 4) manualCorrectContext.closePath();
+        manualCorrectContext.stroke();
+        manualCorrectPoints.forEach((point, index) => {
+            manualCorrectContext.beginPath();
+            manualCorrectContext.arc(
+                point[0], point[1], Math.max(8, manualCorrectCanvas.width / 90), 0, Math.PI * 2
+            );
+            manualCorrectContext.fill();
+            manualCorrectContext.fillStyle = "#fff";
+            manualCorrectContext.font = `bold ${Math.max(14, manualCorrectCanvas.width / 45)}px sans-serif`;
+            manualCorrectContext.textAlign = "center";
+            manualCorrectContext.textBaseline = "middle";
+            manualCorrectContext.fillText(String(index + 1), point[0], point[1]);
+            manualCorrectContext.fillStyle = "#f44336";
+        });
+    }
+    manualCorrectApplyBtn.disabled = manualCorrectPoints.length !== 4;
+    manualCorrectHint.textContent = manualCorrectPoints.length < 4
+        ? `请点击${cornerNames[manualCorrectPoints.length]}（第 ${manualCorrectPoints.length + 1} 个点）`
+        : "四个角已选好；红线内的区域将被拉成矩形";
+}
+
+function openManualCorrect(q) {
+    manualCorrectQuestion = q;
+    manualCorrectPoints = [];
+    manualCorrectImage = new Image();
+    manualCorrectImage.onload = () => {
+        manualCorrectCanvas.width = manualCorrectImage.naturalWidth;
+        manualCorrectCanvas.height = manualCorrectImage.naturalHeight;
+        redrawManualCorrect();
+    };
+    manualCorrectImage.onerror = () => {
+        showMsg("无法载入原卷图片", false);
+        manualCorrectModal.hidden = true;
+    };
+    manualCorrectImage.src = q.source_image_url || q.image_url;
+    manualCorrectHint.textContent = "正在载入原卷…";
+    manualCorrectModal.hidden = false;
+}
+
+manualCorrectCanvas.onclick = (event) => {
+    if (!manualCorrectImage || manualCorrectPoints.length >= 4) return;
+    const rect = manualCorrectCanvas.getBoundingClientRect();
+    manualCorrectPoints.push([
+        (event.clientX - rect.left) * manualCorrectCanvas.width / rect.width,
+        (event.clientY - rect.top) * manualCorrectCanvas.height / rect.height,
+    ]);
+    redrawManualCorrect();
+};
+
+document.getElementById("manualCorrectResetBtn").onclick = () => {
+    manualCorrectPoints = [];
+    redrawManualCorrect();
+};
+document.getElementById("manualCorrectCancelBtn").onclick = () => {
+    manualCorrectModal.hidden = true;
+};
+manualCorrectApplyBtn.onclick = async () => {
+    if (!manualCorrectQuestion || manualCorrectPoints.length !== 4) return;
+    manualCorrectApplyBtn.disabled = true;
+    manualCorrectApplyBtn.textContent = "校正中…";
+    try {
+        const response = await fetch(
+            `/api/questions/${manualCorrectQuestion.id}/recorrect/manual`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ points: manualCorrectPoints }),
+            }
+        );
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || "手动校正失败");
+        manualCorrectModal.hidden = true;
+        renderList();
+        showMsg(
+            `原卷已按四点放平；切成 ${result.questions.length} 道错题。需要时请点“重新分析”。`,
+            true
+        );
+    } catch (error) {
+        showMsg(error.message, false);
+    } finally {
+        manualCorrectApplyBtn.textContent = "确认放平";
+        manualCorrectApplyBtn.disabled = manualCorrectPoints.length !== 4;
+    }
+};
 
 async function recorrectPage(q, button) {
     const sourceHint = q.source_image_url

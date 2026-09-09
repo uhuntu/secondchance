@@ -64,6 +64,20 @@
         </div>
     </div>
 
+    <!-- 手动四点校正 -->
+    <div id="manualCorrectModal" class="modal" hidden>
+        <div class="modal-content manual-correct-content">
+            <h3>手动放平原卷</h3>
+            <p id="manualCorrectHint" class="hint">依次点击：左上角、右上角、右下角、左下角</p>
+            <canvas id="manualCorrectCanvas"></canvas>
+            <div class="modal-actions">
+                <button type="button" id="manualCorrectResetBtn" class="btn">重新选点</button>
+                <button type="button" id="manualCorrectApplyBtn" class="btn btn-primary" disabled>确认放平</button>
+                <button type="button" id="manualCorrectCancelBtn" class="btn">取消</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 大图查看 -->
     <div id="lightbox" class="modal" hidden>
         <div class="lightbox-content">
@@ -72,6 +86,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260909-1"></script>
+    <script src="/static/app.js?v=20260909-2"></script>
 </body>
 </html>
