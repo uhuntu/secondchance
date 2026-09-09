@@ -319,14 +319,9 @@ function renderList() {
                 }
                 const recorrectBtn = document.createElement("button");
                 recorrectBtn.className = "btn btn-small";
-                recorrectBtn.textContent = "自动放平";
+                recorrectBtn.textContent = "校正并切割";
                 recorrectBtn.onclick = () => recorrectPage(representative, recorrectBtn);
                 groupActions.appendChild(recorrectBtn);
-                const manualBtn = document.createElement("button");
-                manualBtn.className = "btn btn-small";
-                manualBtn.textContent = "手动放平";
-                manualBtn.onclick = () => openManualCorrect(representative);
-                groupActions.appendChild(manualBtn);
                 header.appendChild(heading);
                 header.appendChild(groupActions);
                 group.appendChild(header);
@@ -670,7 +665,7 @@ async function recorrectPage(q, button) {
         showMsg(error.message, false);
     } finally {
         button.disabled = false;
-        button.textContent = "自动放平";
+        button.textContent = "校正并切割";
     }
 }
 
