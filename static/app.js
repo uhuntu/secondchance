@@ -744,33 +744,6 @@ answerMaskCanvas.onpointerup = (event) => {
     drawAnswerMasks();
 };
 
-document.getElementById("answerMaskSuggestBtn").onclick = async (event) => {
-    if (!answerMaskQuestion) return;
-    const btn = event.currentTarget;
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = "AI 识别中…";
-    try {
-        const response = await fetch(
-            `/api/questions/${answerMaskQuestion.id}/answer-masks/suggest`,
-            { method: "POST" }
-        );
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.detail || "AI 建议遮挡失败");
-        if (!result.masks || !result.masks.length) {
-            showMsg("AI 未找到明显的作答/批改痕迹，可手动拖框", false);
-            return;
-        }
-        answerMasks = answerMasks.concat(result.masks);
-        drawAnswerMasks();
-        showMsg(`AI 建议了 ${result.masks.length} 个遮挡区域，请检查后再保存`, true);
-    } catch (error) {
-        showMsg(error.message, false);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = originalText;
-    }
-};
 document.getElementById("answerMaskClearBtn").onclick = () => {
     answerMasks = [];
     drawAnswerMasks();

@@ -52,28 +52,6 @@ CROP_PROMPT = """你是小学数学试卷版面识别助手。请检查这张已
 输出格式：
 {"错题区域":[{"题号":"1","上":120,"下":310},{"题号":"3","上":430,"下":620}]}"""
 
-MASK_PROMPT = """你是小学数学练习卷的版面处理助手。这张图片是一道错题的照片，接下来要把它重新打印给孩子练习，请找出图片中透露"最终答案"的手写或批改痕迹区域，以便遮挡后重新打印。
-
-需要标记的内容：
-- 孩子手写的答案或解题过程；
-- 老师的红笔批改：对号、叉号、圈、订正后的答案、评分等；
-- 任何写在题目空白处、会让孩子直接看到答案的文字或符号。
-
-不要标记：
-- 印刷的题目文字、图形、表格、选项；
-- 题号、页码等版面信息。
-
-坐标要求：
-- "左""右" 是横坐标相对图片宽度的千分比（最左 0，最右 1000）；
-- "上""下" 是纵坐标相对图片高度的千分比（最上 0，最下 1000）；
-- 相邻、重叠的痕迹合并成一个区域，不要拆得太碎；
-- 只输出 JSON，不要输出解释或 Markdown。
-
-输出格式：
-{"遮挡区域": [{"左":600,"上":700,"右":950,"下":820}]}
-如果图片里找不到任何孩子作答或批改痕迹，输出 {"遮挡区域": []}。"""
-
-
 def get_api_key() -> str | None:
     key = os.environ.get("MOONSHOT_API_KEY")
     if key:
@@ -236,36 +214,3 @@ def identify_wrong_question_ranges(image_path: str, image_height: int) -> list[t
             ranges.append((pixel_top, pixel_bottom))
     ranges.sort()
     return ranges
-
-
-def identify_answer_regions(image_path: str) -> list[list[float]]:
-    """Ask the vision model to suggest answer-mask boxes for one question crop.
-
-    Returns [x, y, width, height] per box, each value a per-mille fraction of the
-    image's own width (x, width) or height (y, height) — the same coordinate space
-    the manual mask editor already uses, so results can be reviewed/adjusted there
-    before saving rather than applied automatically."""
-    result = None
-    for kind, payload in analyze_image_events(image_path, MASK_PROMPT):
-        if kind == "result":
-            result = payload
-    if not isinstance(result, dict):
-        raise RuntimeError("模型未返回遮挡建议")
-    boxes = []
-    for item in result.get("遮挡区域", []):
-        if not isinstance(item, dict):
-            continue
-        try:
-            left = max(0.0, min(1000.0, float(item["左"])))
-            top = max(0.0, min(1000.0, float(item["上"])))
-            right = max(0.0, min(1000.0, float(item["右"])))
-            bottom = max(0.0, min(1000.0, float(item["下"])))
-        except (KeyError, TypeError, ValueError):
-            continue
-        width = right - left
-        height = bottom - top
-        if width >= 10 and height >= 10:
-            boxes.append([round(left, 2), round(top, 2), round(width, 2), round(height, 2)])
-        if len(boxes) >= 50:
-            break
-    return boxes
