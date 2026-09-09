@@ -68,7 +68,24 @@ def test_wrong_question_ranges_are_scaled_and_filtered():
     assert ranges == [(0, 1000), (100, 300)]
 
 
+def test_answer_regions_are_filtered_and_clamped():
+    original_events = ai.analyze_image_events
+    ai.analyze_image_events = lambda *_: iter([
+        ("result", {"遮挡区域": [
+            {"左": 600, "上": 700, "右": 950, "下": 820},
+            {"左": 100, "上": 100, "右": 105, "下": 300},
+            {"左": -50, "上": 900, "右": 1200, "下": 1100},
+        ]})
+    ])
+    try:
+        boxes = ai.identify_answer_regions("unused.jpg")
+    finally:
+        ai.analyze_image_events = original_events
+    assert boxes == [[600, 700, 350, 120], [0, 900, 1000, 100]]
+
+
 if __name__ == "__main__":
     test_transient_connection_error_is_retried()
     test_wrong_question_ranges_are_scaled_and_filtered()
+    test_answer_regions_are_filtered_and_clamped()
     print("AI retry tests passed")

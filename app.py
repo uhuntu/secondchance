@@ -12,7 +12,12 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ai import analyze_image, analyze_image_events, identify_wrong_question_ranges
+from ai import (
+    analyze_image,
+    analyze_image_events,
+    identify_answer_regions,
+    identify_wrong_question_ranges,
+)
 from database import Base, add_column_if_missing, engine, get_db
 from figure import render_stack
 from image_processing import crop_image_ranges, process_page
@@ -479,6 +484,22 @@ def update_question(
     db.commit()
     db.refresh(question)
     return question_to_dict(question)
+
+
+@app.post("/api/questions/{question_id}/answer-masks/suggest")
+def suggest_answer_masks(question_id: int, db: Session = Depends(get_db)):
+    """Ask the vision model to propose mask boxes; caller still reviews and saves them."""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    image_path = Path(question.image_path)
+    if not image_path.is_file():
+        raise HTTPException(404, "题目图片不存在")
+    try:
+        boxes = identify_answer_regions(str(image_path))
+    except Exception as exc:
+        raise HTTPException(502, f"AI 遮挡建议失败：{str(exc)[:200]}")
+    return {"masks": boxes}
 
 
 @app.put("/api/questions/{question_id}/answer-masks")

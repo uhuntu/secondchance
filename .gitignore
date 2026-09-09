@@ -26,3 +26,6 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local server logs
+_server.log
