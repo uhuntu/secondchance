@@ -170,6 +170,44 @@ textarea:focus {
 }
 
 .card-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.worksheet-group {
+    background: #f7f8fb;
+    border: 1px solid #e6e8ef;
+    border-radius: 14px;
+    padding: 14px;
+}
+
+.worksheet-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.worksheet-header h3 {
+    margin: 0 0 3px;
+    font-size: 17px;
+}
+
+.worksheet-header span {
+    color: #999;
+    font-size: 12px;
+}
+
+.worksheet-actions,
+.q-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.worksheet-question-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 16px;
@@ -234,9 +272,21 @@ textarea:focus {
     margin-top: 8px;
     border-top: 1px dashed #e8e8e8;
     padding-top: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+}
+
+.ai-box > summary {
+    color: #4a6cf7;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.ai-box[open] > summary {
+    margin-bottom: 8px;
+}
+
+.ai-box > .ai-row,
+.ai-box > .ai-similar {
+    margin-top: 6px;
 }
 
 .ai-row {
@@ -308,8 +358,6 @@ textarea:focus {
 }
 
 .q-actions {
-    display: flex;
-    gap: 8px;
     padding: 10px 14px;
     border-top: 1px solid #f0f0f0;
 }
@@ -447,7 +495,12 @@ textarea:focus {
 }
 
 @media (max-width: 600px) {
-    .card-grid {
+    .worksheet-question-grid {
         grid-template-columns: 1fr;
+    }
+
+    .worksheet-header {
+        align-items: flex-start;
+        flex-direction: column;
     }
 }

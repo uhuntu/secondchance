@@ -170,8 +170,13 @@ function analyzeQuestion(id) {
 }
 
 function aiSection(q) {
-    const box = document.createElement("div");
+    const box = document.createElement("details");
     box.className = "ai-box";
+    const summary = document.createElement("summary");
+    const errorText = q.error_analysis || "";
+    const errorPreview = errorText.replace(/\s+/g, " ").slice(0, 24);
+    summary.textContent = errorPreview ? `查看分析 · ${errorPreview}${errorText.length > 24 ? "…" : ""}` : "查看分析";
+    box.appendChild(summary);
 
     const add = (label, text) => {
         if (!text) return;
@@ -193,6 +198,38 @@ function aiSection(q) {
     add("错因", q.error_analysis);
     add("正确答案", q.correct_answer);
     add("讲解", q.explanation);
+
+    let redo = {};
+    try {
+        redo = JSON.parse(q.original_redo || "{}");
+    } catch (e) {
+        redo = {};
+    }
+    if (redo["题目"]) {
+        const det = document.createElement("details");
+        det.className = "ai-similar";
+        const sum = document.createElement("summary");
+        sum.textContent = "生成的干净版原题";
+        det.appendChild(sum);
+        const text = document.createElement("div");
+        text.className = "ai-text";
+        text.textContent = redo["题目"].replace(/\\n/g, "\n");
+        det.appendChild(text);
+        const figVal = redo["图"];
+        if (typeof figVal === "string" && figVal) {
+            const fig = document.createElement("pre");
+            fig.className = "ai-fig";
+            fig.textContent = figVal.replace(/\\n/g, "\n");
+            det.appendChild(fig);
+        } else if (figVal && figVal["立体"]) {
+            const img = document.createElement("img");
+            img.className = "ai-fig-img";
+            img.src = "/api/stack-figure?h=" + encodeURIComponent(JSON.stringify(figVal["立体"]));
+            img.alt = "干净版原题立体图";
+            det.appendChild(img);
+        }
+        box.appendChild(det);
+    }
 
     let similar = [];
     try {
@@ -247,17 +284,63 @@ function renderList() {
         .then((list) => {
             questionList.innerHTML = "";
             emptyHint.hidden = list.length > 0;
+            const groups = new Map();
             list.forEach((q) => {
+                const key = q.source_image_url || `single-${q.id}`;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(q);
+            });
+            groups.forEach((items) => {
+                const representative = items[0];
+                const group = document.createElement("section");
+                group.className = "worksheet-group";
+                const header = document.createElement("div");
+                header.className = "worksheet-header";
+                const heading = document.createElement("div");
+                const title = document.createElement("h3");
+                title.textContent = representative.source_image_url
+                    ? `一张原卷 · ${items.length} 道错题`
+                    : "单题照片";
+                const dates = items.map((item) => new Date(item.created_at));
+                const date = new Date(Math.min(...dates));
+                const meta = document.createElement("span");
+                meta.textContent = date.toLocaleString("zh-CN", { hour12: false });
+                heading.appendChild(title);
+                heading.appendChild(meta);
+
+                const groupActions = document.createElement("div");
+                groupActions.className = "worksheet-actions";
+                if (representative.source_image_url) {
+                    const sourceBtn = document.createElement("button");
+                    sourceBtn.className = "btn btn-small";
+                    sourceBtn.textContent = "查看原卷";
+                    sourceBtn.onclick = () => openLightbox(representative.source_image_url);
+                    groupActions.appendChild(sourceBtn);
+                }
+                const recorrectBtn = document.createElement("button");
+                recorrectBtn.className = "btn btn-small";
+                recorrectBtn.textContent = "自动放平";
+                recorrectBtn.onclick = () => recorrectPage(representative, recorrectBtn);
+                groupActions.appendChild(recorrectBtn);
+                const manualBtn = document.createElement("button");
+                manualBtn.className = "btn btn-small";
+                manualBtn.textContent = "手动放平";
+                manualBtn.onclick = () => openManualCorrect(representative);
+                groupActions.appendChild(manualBtn);
+                header.appendChild(heading);
+                header.appendChild(groupActions);
+                group.appendChild(header);
+
+                const grid = document.createElement("div");
+                grid.className = "worksheet-question-grid";
+                items.forEach((q, itemIndex) => {
                 const card = document.createElement("div");
                 card.className = "q-card";
 
                 const img = document.createElement("img");
                 img.src = q.image_url;
-                img.alt = "错题照片";
-                img.onclick = () => {
-                    document.getElementById("lightboxImg").src = q.image_url;
-                    document.getElementById("lightbox").hidden = false;
-                };
+                img.alt = `错题 ${itemIndex + 1}`;
+                img.onclick = () => openLightbox(q.image_url);
 
                 const body = document.createElement("div");
                 body.className = "q-card-body";
@@ -279,11 +362,6 @@ function renderList() {
                 if (q.analyzed) {
                     body.appendChild(aiSection(q));
                 }
-                const time = document.createElement("div");
-                time.className = "q-time";
-                time.textContent = formatTime(q.created_at);
-                body.appendChild(time);
-
                 const actions = document.createElement("div");
                 actions.className = "q-actions";
                 const analyzeBtn = document.createElement("button");
@@ -300,23 +378,6 @@ function renderList() {
                         });
                 };
                 actions.appendChild(analyzeBtn);
-                const recorrectBtn = document.createElement("button");
-                recorrectBtn.className = "btn btn-small";
-                recorrectBtn.textContent = q.source_image_url ? "重新校正原卷" : "校正已存照片";
-                recorrectBtn.onclick = () => recorrectPage(q, recorrectBtn);
-                actions.appendChild(recorrectBtn);
-                const manualBtn = document.createElement("button");
-                manualBtn.className = "btn btn-small";
-                manualBtn.textContent = "手动放平";
-                manualBtn.onclick = () => openManualCorrect(q);
-                actions.appendChild(manualBtn);
-                if (q.source_image_url) {
-                    const sourceBtn = document.createElement("button");
-                    sourceBtn.className = "btn btn-small";
-                    sourceBtn.textContent = "查看原卷";
-                    sourceBtn.onclick = () => openLightbox(q.source_image_url);
-                    actions.appendChild(sourceBtn);
-                }
                 const editBtn = document.createElement("button");
                 editBtn.className = "btn btn-small";
                 editBtn.textContent = "编辑";
@@ -331,7 +392,10 @@ function renderList() {
                 card.appendChild(img);
                 card.appendChild(body);
                 card.appendChild(actions);
-                questionList.appendChild(card);
+                grid.appendChild(card);
+                });
+                group.appendChild(grid);
+                questionList.appendChild(group);
             });
         });
 }
