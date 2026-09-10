@@ -336,7 +336,7 @@ def preview_manual_recorrection(
         "height": height,
         "page_detected": result.page_detected,
         "red_mark_count": result.mark_count,
-        "ranges": [],
+        "ranges": [list(item) for item in result.crop_ranges],
     }
 
 
