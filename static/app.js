@@ -34,40 +34,6 @@ const emptyHint = document.getElementById("emptyHint");
 
 let editingId = null;
 
-// AI 分析队列状态条
-const analyzeStatus = document.getElementById("analyzeStatus");
-let pendingAnalyses = 0;
-let statusTimer = null;
-let statusStart = 0;
-
-function statusTick() {
-    if (pendingAnalyses <= 0) {
-        analyzeStatus.hidden = true;
-        clearInterval(statusTimer);
-        statusTimer = null;
-        return;
-    }
-    const secs = Math.floor((Date.now() - statusStart) / 1000);
-    analyzeStatus.textContent = `AI 正在分析错题…（队列剩余 ${pendingAnalyses} 道，已等待 ${secs} 秒，请稍候）`;
-}
-
-function beginAnalyze() {
-    pendingAnalyses++;
-    if (!statusTimer) {
-        statusStart = Date.now();
-        analyzeStatus.hidden = false;
-        statusTick();
-        statusTimer = setInterval(statusTick, 1000);
-    } else {
-        statusTick();
-    }
-}
-
-function endAnalyze() {
-    pendingAnalyses = Math.max(0, pendingAnalyses - 1);
-    statusTick();
-}
-
 function showMsg(text, ok) {
     uploadMsg.textContent = text;
     uploadMsg.className = "msg " + (ok ? "ok" : "err");
@@ -88,194 +54,6 @@ function initKpList() {
 function formatTime(iso) {
     const d = new Date(iso);
     return d.toLocaleString("zh-CN", { hour12: false });
-}
-
-// AI 思考过程弹窗
-const thinkingModal = document.getElementById("thinkingModal");
-const thinkingText = document.getElementById("thinkingText");
-const thinkingCloseBtn = document.getElementById("thinkingCloseBtn");
-
-function openThinking() {
-    thinkingText.textContent = "";
-    thinkingCloseBtn.hidden = true;
-    thinkingModal.hidden = false;
-}
-
-function appendThinking(text) {
-    // 防止过长撑爆页面，思考过程最多显示 8000 字
-    if (thinkingText.textContent.length > 8000) return;
-    thinkingText.textContent += text;
-    thinkingText.scrollTop = thinkingText.scrollHeight;
-}
-
-function finishThinking(ok) {
-    appendThinking(ok ? "\n\n✅ 分析完成！" : "\n\n❌ 分析失败");
-    thinkingCloseBtn.hidden = false;
-}
-
-thinkingCloseBtn.onclick = () => (thinkingModal.hidden = true);
-
-function analyzeQuestion(id) {
-    beginAnalyze();
-    openThinking();
-    let sawReasoning = false;
-    let gotEvent = false;
-    const waitHint = setTimeout(() => {
-        if (!gotEvent) {
-            appendThinking("正在连接模型…（思考型模型推理较慢，通常需要 2~6 分钟）\n\n");
-        }
-    }, 8000);
-    return fetch(`/api/questions/${id}/analyze/stream`, { method: "POST" })
-        .then((r) => {
-            if (!r.ok || !r.body) throw new Error("分析请求失败");
-            const reader = r.body.getReader();
-            const decoder = new TextDecoder();
-            let buf = "";
-            const pump = () =>
-                reader.read().then(({ done, value }) => {
-                    if (done) return null;
-                    gotEvent = true;
-                    buf += decoder.decode(value, { stream: true });
-                    const lines = buf.split("\n");
-                    buf = lines.pop();
-                    for (const line of lines) {
-                        if (!line.startsWith("data:")) continue;
-                        let evt;
-                        try {
-                            evt = JSON.parse(line.slice(5).trim());
-                        } catch (e) {
-                            continue;
-                        }
-                        if (evt.type === "reasoning") {
-                            sawReasoning = true;
-                            appendThinking(evt.text);
-                        } else if (evt.type === "content") {
-                            if (!sawReasoning) appendThinking(evt.text);
-                        } else if (evt.type === "done") {
-                            finishThinking(true);
-                            return evt.question;
-                        } else if (evt.type === "error") {
-                            finishThinking(false);
-                            throw new Error(evt.message);
-                        }
-                    }
-                    return pump();
-                });
-            return pump();
-        })
-        .finally(() => {
-            clearTimeout(waitHint);
-            endAnalyze();
-        });
-}
-
-function aiSection(q) {
-    const box = document.createElement("details");
-    box.className = "ai-box";
-    const summary = document.createElement("summary");
-    const errorText = q.error_analysis || "";
-    const errorPreview = errorText.replace(/\s+/g, " ").slice(0, 24);
-    summary.textContent = errorPreview ? `查看分析 · ${errorPreview}${errorText.length > 24 ? "…" : ""}` : "查看分析";
-    box.appendChild(summary);
-
-    const add = (label, text) => {
-        if (!text) return;
-        const row = document.createElement("div");
-        row.className = "ai-row";
-        const lab = document.createElement("span");
-        lab.className = "ai-label";
-        lab.textContent = label;
-        const val = document.createElement("div");
-        val.className = "ai-text";
-        val.textContent = text.replace(/\\n/g, "\n");
-        row.appendChild(lab);
-        row.appendChild(val);
-        box.appendChild(row);
-    };
-
-    add("题目", q.question_text);
-    add("孩子的作答", q.child_answer);
-    add("错因", q.error_analysis);
-    add("正确答案", q.correct_answer);
-    add("讲解", q.explanation);
-
-    let redo = {};
-    try {
-        redo = JSON.parse(q.original_redo || "{}");
-    } catch (e) {
-        redo = {};
-    }
-    if (redo["题目"]) {
-        const det = document.createElement("details");
-        det.className = "ai-similar";
-        const sum = document.createElement("summary");
-        sum.textContent = "生成的干净版原题";
-        det.appendChild(sum);
-        const text = document.createElement("div");
-        text.className = "ai-text";
-        text.textContent = redo["题目"].replace(/\\n/g, "\n");
-        det.appendChild(text);
-        const figVal = redo["图"];
-        if (typeof figVal === "string" && figVal) {
-            const fig = document.createElement("pre");
-            fig.className = "ai-fig";
-            fig.textContent = figVal.replace(/\\n/g, "\n");
-            det.appendChild(fig);
-        } else if (figVal && figVal["立体"]) {
-            const img = document.createElement("img");
-            img.className = "ai-fig-img";
-            img.src = "/api/stack-figure?h=" + encodeURIComponent(JSON.stringify(figVal["立体"]));
-            img.alt = "干净版原题立体图";
-            det.appendChild(img);
-        }
-        box.appendChild(det);
-    }
-
-    let similar = [];
-    try {
-        similar = JSON.parse(q.similar_questions || "[]");
-    } catch (e) {
-        similar = [];
-    }
-    if (similar.length) {
-        const det = document.createElement("details");
-        det.className = "ai-similar";
-        const sum = document.createElement("summary");
-        sum.textContent = `举一反三（${similar.length} 道类似题）`;
-        det.appendChild(sum);
-        similar.forEach((s, i) => {
-            const item = document.createElement("div");
-            item.className = "ai-text";
-            item.textContent = `${i + 1}. ${(s["题目"] || "").replace(/\\n/g, "\n")}`;
-            det.appendChild(item);
-            const figVal = s["图"];
-            if (typeof figVal === "string" && figVal) {
-                const fig = document.createElement("pre");
-                fig.className = "ai-fig";
-                fig.textContent = figVal.replace(/\\n/g, "\n");
-                det.appendChild(fig);
-            } else if (figVal && figVal["立体"]) {
-                const img = document.createElement("img");
-                img.className = "ai-fig-img";
-                img.src = "/api/stack-figure?h=" + encodeURIComponent(JSON.stringify(figVal["立体"]));
-                img.alt = "立体图形";
-                det.appendChild(img);
-            } else if (figVal && figVal["字符画"]) {
-                const fig = document.createElement("pre");
-                fig.className = "ai-fig";
-                fig.textContent = figVal["字符画"].replace(/\\n/g, "\n");
-                det.appendChild(fig);
-            }
-            if (s["答案"]) {
-                const ans = document.createElement("div");
-                ans.className = "ai-answer";
-                ans.textContent = `答案：${s["答案"]}`;
-                det.appendChild(ans);
-            }
-        });
-        box.appendChild(det);
-    }
-    return box;
 }
 
 function renderList() {
@@ -354,25 +132,8 @@ function renderList() {
                     noteEl.textContent = q.note;
                     body.appendChild(noteEl);
                 }
-                if (q.analyzed) {
-                    body.appendChild(aiSection(q));
-                }
                 const actions = document.createElement("div");
                 actions.className = "q-actions";
-                const analyzeBtn = document.createElement("button");
-                analyzeBtn.className = "btn btn-small";
-                analyzeBtn.textContent = q.analyzed ? "重新分析" : "分析";
-                analyzeBtn.onclick = () => {
-                    analyzeBtn.disabled = true;
-                    analyzeBtn.textContent = "分析中…";
-                    analyzeQuestion(q.id)
-                        .then(() => renderList())
-                        .catch((e) => {
-                            alert(e.message);
-                            renderList();
-                        });
-                };
-                actions.appendChild(analyzeBtn);
                 if (q.crop_reviewed) {
                     const maskBtn = document.createElement("button");
                     maskBtn.className = "btn btn-small";
@@ -498,7 +259,7 @@ document.getElementById("manualCorrectCancelBtn").onclick = () => {
 manualCorrectApplyBtn.onclick = async () => {
     if (!manualCorrectQuestion || manualCorrectPoints.length !== 4) return;
     manualCorrectApplyBtn.disabled = true;
-    manualCorrectApplyBtn.textContent = "AI 识别题目中…";
+    manualCorrectApplyBtn.textContent = "生成预览中…";
     try {
         const response = await fetch(
             `/api/questions/${manualCorrectQuestion.id}/recorrect/preview`,
@@ -856,16 +617,7 @@ submitBtn.onclick = () => {
                 const detection = result.red_mark_count
                     ? `检测到 ${result.red_mark_count} 组明显红叉/圈叉，已切成 ${created.length} 道候选错题`
                     : "未检测到红色批改，已按完整照片保存";
-                showMsg(detection + "，AI 将逐题分析…", true);
-                for (const question of created) {
-                    try {
-                        await analyzeQuestion(question.id);
-                    } catch (e) {
-                        showMsg(`第 ${question.id} 题分析失败：${e.message}`, false);
-                    }
-                    renderList();
-                }
-                showMsg(`已完成 ${created.length} 道候选错题的处理`, true);
+                showMsg(detection, true);
             }
         })
         .catch((e) => showMsg(e.message, false))

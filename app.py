@@ -6,15 +6,13 @@ from pathlib import Path
 
 import cv2
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ai import analyze_image, analyze_image_events
 from database import Base, add_column_if_missing, engine, get_db
-from figure import render_stack
 from image_processing import crop_image_ranges, process_page
 from models import Question
 
@@ -26,15 +24,8 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 Base.metadata.create_all(bind=engine)
-# 旧库补齐 AI 分析字段（幂等）
+# 旧库补齐字段（幂等）
 for _col, _ddl in [
-    ("question_text", "TEXT DEFAULT ''"),
-    ("child_answer", "TEXT DEFAULT ''"),
-    ("error_analysis", "TEXT DEFAULT ''"),
-    ("correct_answer", "TEXT DEFAULT ''"),
-    ("explanation", "TEXT DEFAULT ''"),
-    ("similar_questions", "TEXT DEFAULT ''"),
-    ("original_redo", "TEXT DEFAULT ''"),
     ("source_image_path", "TEXT DEFAULT ''"),
     ("answer_masks", "TEXT DEFAULT ''"),
 ]:
@@ -61,14 +52,6 @@ def question_to_dict(q: Question) -> dict:
         "crop_reviewed": "_reviewed_" in Path(q.image_path).name,
         "answer_masks": q.answer_masks or "[]",
         "created_at": created_at.isoformat(),
-        "analyzed": bool(q.question_text or q.error_analysis),
-        "question_text": q.question_text,
-        "child_answer": q.child_answer,
-        "error_analysis": q.error_analysis,
-        "correct_answer": q.correct_answer,
-        "explanation": q.explanation,
-        "similar_questions": q.similar_questions,
-        "original_redo": q.original_redo,
     }
 
 
@@ -239,13 +222,6 @@ def _replace_question_crops(
         for item, crop_path in zip(group, new_paths):
             item.image_path = str(crop_path)
             item.knowledge_point = ""
-            item.question_text = ""
-            item.child_answer = ""
-            item.error_analysis = ""
-            item.correct_answer = ""
-            item.explanation = ""
-            item.similar_questions = ""
-            item.original_redo = ""
             item.answer_masks = ""
         for crop_path in new_paths[len(group):]:
             db.add(
@@ -501,81 +477,6 @@ def update_answer_masks(
     return question_to_dict(question)
 
 
-@app.post("/api/questions/{question_id}/analyze/stream")
-def analyze_question_stream(question_id: int, db: Session = Depends(get_db)):
-    """流式分析：SSE 实时推送模型思考过程，最后推送分析结果"""
-    question = db.get(Question, question_id)
-    if not question:
-        raise HTTPException(404, "错题不存在")
-
-    def gen():
-        try:
-            for kind, payload in analyze_image_events(question.image_path):
-                if kind == "reasoning":
-                    yield f"data: {json.dumps({'type': 'reasoning', 'text': payload}, ensure_ascii=False)}\n\n"
-                elif kind == "content":
-                    yield f"data: {json.dumps({'type': 'content', 'text': payload}, ensure_ascii=False)}\n\n"
-                elif kind == "result":
-                    question.knowledge_point = payload.get("知识点", question.knowledge_point)[:200]
-                    question.question_text = payload.get("题目", "")
-                    question.child_answer = payload.get("孩子的作答", "")
-                    question.error_analysis = payload.get("错因分析", "")
-                    question.correct_answer = payload.get("正确答案", "")
-                    question.explanation = payload.get("讲解", "")
-                    try:
-                        question.similar_questions = json.dumps(
-                            payload.get("举一反三", []), ensure_ascii=False
-                        )
-                    except (TypeError, ValueError):
-                        question.similar_questions = "[]"
-                    try:
-                        question.original_redo = json.dumps(
-                            payload.get("原题重练", {}), ensure_ascii=False
-                        )
-                    except (TypeError, ValueError):
-                        question.original_redo = ""
-                    db.commit()
-                    db.refresh(question)
-                    yield f"data: {json.dumps({'type': 'done', 'question': question_to_dict(question)}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
-
-
-@app.post("/api/questions/{question_id}/analyze")
-def analyze_question(question_id: int, db: Session = Depends(get_db)):
-    question = db.get(Question, question_id)
-    if not question:
-        raise HTTPException(404, "错题不存在")
-    try:
-        result = analyze_image(question.image_path)
-    except (RuntimeError, json.JSONDecodeError, KeyError, OSError) as e:
-        raise HTTPException(502, f"AI 分析失败：{e}")
-
-    question.knowledge_point = result.get("知识点", question.knowledge_point)[:200]
-    question.question_text = result.get("题目", "")
-    question.child_answer = result.get("孩子的作答", "")
-    question.error_analysis = result.get("错因分析", "")
-    question.correct_answer = result.get("正确答案", "")
-    question.explanation = result.get("讲解", "")
-    try:
-        question.similar_questions = json.dumps(
-            result.get("举一反三", []), ensure_ascii=False
-        )
-    except (TypeError, ValueError):
-        question.similar_questions = "[]"
-    try:
-        question.original_redo = json.dumps(
-            result.get("原题重练", {}), ensure_ascii=False
-        )
-    except (TypeError, ValueError):
-        question.original_redo = ""
-    db.commit()
-    db.refresh(question)
-    return question_to_dict(question)
-
-
 @app.delete("/api/questions/{question_id}", status_code=204)
 def delete_question(question_id: int, db: Session = Depends(get_db)):
     question = db.get(Question, question_id)
@@ -601,19 +502,3 @@ def get_upload(filename: str):
     if not file_path.is_file():
         raise HTTPException(404, "文件不存在")
     return FileResponse(file_path)
-
-
-@app.get("/api/stack-figure")
-def stack_figure(h: str):
-    """把立体高度图（二维数组）渲染成方块示意图 PNG"""
-    try:
-        heights = json.loads(h)
-        assert isinstance(heights, list) and heights
-        assert all(isinstance(r, list) and r for r in heights)
-        assert len(heights) <= 8 and max(len(r) for r in heights) <= 8
-        flat = [v for r in heights for v in r]
-        assert all(isinstance(v, int) and 0 <= v <= 10 for v in flat)
-        assert 0 < sum(1 for v in flat if v) <= 64
-    except (ValueError, AssertionError):
-        raise HTTPException(400, "非法的高度图参数")
-    return FileResponse(render_stack(heights))

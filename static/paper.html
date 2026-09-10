@@ -102,24 +102,6 @@
             font-weight: bold;
         }
 
-        .q-text {
-            flex: 1;
-        }
-
-        .q-fig {
-            font-family: "Courier New", monospace;
-            font-size: 15px;
-            line-height: 1.5;
-            margin: 6px 0 2px 2px;
-            letter-spacing: 2px;
-        }
-
-        .q-img {
-            display: block;
-            height: 120px;
-            margin: 6px 0 2px;
-        }
-
         .crop-question {
             display: block;
             break-inside: avoid;
@@ -148,47 +130,6 @@
             position: absolute;
             background: #fff;
             border: 1px solid #bbb;
-        }
-
-        .answer-blank {
-            border-bottom: 1px solid #999;
-            display: inline-block;
-            min-width: 120px;
-            height: 1.2em;
-        }
-
-        .answers-page {
-            page-break-before: always;
-        }
-
-        /* 分开打印：只打题目或只打答案 */
-        @media print {
-            body.print-questions .answers-page {
-                display: none;
-            }
-
-            body.print-answers #questionPart {
-                display: none;
-            }
-
-            /* 只打答案时不再需要强制分页，避免开头一张空白页 */
-            body.print-answers .answers-page {
-                page-break-before: auto;
-            }
-        }
-
-        .answers-title {
-            text-align: center;
-            font-size: 18px;
-            font-weight: bold;
-            margin-bottom: 12px;
-        }
-
-        .answer-item {
-            display: flex;
-            gap: 6px;
-            font-size: 14px;
-            margin-bottom: 6px;
         }
 
         .empty-tip {
@@ -224,63 +165,18 @@
 </head>
 <body>
     <div class="toolbar">
-        <select id="paperMode" class="btn">
-            <option value="cropped">错题切片原卷（推荐）</option>
-            <option value="similar">举一反三练习卷</option>
-            <option value="original">AI 重绘原题</option>
-        </select>
-        <button class="btn btn-primary" onclick="printPart('questions')">🖨️ 打印题目卷（给孩子）</button>
-        <button class="btn" onclick="printPart('answers')">🖨️ 打印答案（家长留存）</button>
+        <button class="btn btn-primary" onclick="window.print()">🖨️ 打印题目卷（给孩子）</button>
         <button class="btn" onclick="window.close()">关闭</button>
     </div>
     <div class="paper" id="paper"></div>
 
     <script>
-        function printPart(part) {
-            document.body.classList.remove("print-questions", "print-answers");
-            document.body.classList.add(part === "questions" ? "print-questions" : "print-answers");
-            window.print();
-        }
-
-        window.onafterprint = () => {
-            document.body.classList.remove("print-questions", "print-answers");
-        };
-    </script>
-
-    <script>
         const paper = document.getElementById("paper");
-        const paperMode = document.getElementById("paperMode");
 
         function esc(s) {
             const d = document.createElement("div");
             d.textContent = s;
             return d.innerHTML;
-        }
-
-        function figureRefFilter(questions) {
-            // 依赖图形又没有附带任何图的题印不出来，跳过
-            return questions.filter((s) => {
-                const qt = s["题目"] || "";
-                const fig = s["图"];
-                const hasFig = typeof fig === "string" ? !!fig : !!(fig && (fig["立体"] || fig["字符画"]));
-                if (hasFig) return true;
-                return !/右图|左图|下图|上图|如图|图中|选项为.*图形|哪个图形/.test(qt);
-            });
-        }
-
-        function figHtml(fig) {
-            if (!fig) return "";
-            if (typeof fig === "string") {
-                return `<pre class="q-fig">${esc(fig.replace(/\\n/g, "\n"))}</pre>`;
-            }
-            if (fig["立体"]) {
-                const src = "/api/stack-figure?h=" + encodeURIComponent(JSON.stringify(fig["立体"]));
-                return `<img class="q-img" src="${src}" alt="立体图形">`;
-            }
-            if (fig["字符画"]) {
-                return `<pre class="q-fig">${esc(fig["字符画"].replace(/\\n/g, "\n"))}</pre>`;
-            }
-            return "";
         }
 
         function maskHtml(masks) {
@@ -295,114 +191,55 @@
         }
 
         function buildPaper() {
-            const mode = paperMode.value;
             fetch("/api/questions")
                 .then((r) => r.json())
                 .then((list) => {
                     const sections = [];
                     list.forEach((q) => {
-                        if (mode === "cropped") {
-                            if (!q.crop_reviewed) return;
-                            let masks = [];
-                            try {
-                                masks = JSON.parse(q.answer_masks || "[]");
-                            } catch (e) {
-                                masks = [];
-                            }
-                            sections.push({
-                                kp: q.knowledge_point || "未分类错题",
-                                questions: [{
-                                    图片: q.image_url,
-                                    遮挡: masks,
-                                    答案: (q.correct_answer || "").trim(),
-                                }],
-                            });
-                            return;
-                        }
-                        if (!q.analyzed) return;
-                        if (mode === "original") {
-                            let redo = {};
-                            try {
-                                redo = JSON.parse(q.original_redo || "{}");
-                            } catch (e) {
-                                redo = {};
-                            }
-                            const qt = (redo["题目"] || "").trim();
-                            if (!qt) return;
-                            const questions = figureRefFilter([
-                                { 题目: qt, 图: redo["图"] || "", 答案: (q.correct_answer || "").trim() },
-                            ]);
-                            if (questions.length) {
-                                sections.push({
-                                    kp: q.knowledge_point || "综合",
-                                    questions,
-                                });
-                            }
-                            return;
-                        }
-                        let similar = [];
+                        if (!q.crop_reviewed) return;
+                        let masks = [];
                         try {
-                            similar = JSON.parse(q.similar_questions || "[]");
+                            masks = JSON.parse(q.answer_masks || "[]");
                         } catch (e) {
-                            similar = [];
+                            masks = [];
                         }
-                        similar = figureRefFilter(similar);
-                        if (similar.length) {
-                            sections.push({
-                                kp: q.knowledge_point || "综合",
-                                questions: similar,
-                            });
-                        }
+                        sections.push({
+                            kp: q.knowledge_point || "未分类错题",
+                            image: q.image_url,
+                            masks,
+                        });
                     });
 
                     if (!sections.length) {
-                        paper.innerHTML = '<p class="empty-tip">还没有可出题的错题分析，先去分析几道错题吧！</p>';
+                        paper.innerHTML = '<p class="empty-tip">还没有已确认切割的错题，先去"校正并切割"确认几道错题吧！</p>';
                         return;
                     }
 
                     const today = new Date().toLocaleDateString("zh-CN");
-                    const title = mode === "cropped"
-                        ? "数学错题重练卷"
-                        : (mode === "original" ? "数学 AI 重绘原题" : "数学举一反三练习卷");
                     let qNo = 0;
                     let bodyHtml = "";
-                    const answers = [];
+                    let lastKp = null;
 
-                    sections.forEach((sec, si) => {
-                        bodyHtml += `<div class="kp-section"><div class="kp-title">【${esc(sec.kp)}】</div>`;
-                        sec.questions.forEach((s) => {
-                            qNo++;
-                            if (s["图片"]) {
-                                bodyHtml += `<div class="question crop-question"><span class="q-num">${qNo}.</span><div class="crop-image-wrap"><img class="crop-img" src="${esc(s["图片"])}" alt="错题切片">${maskHtml(s["遮挡"])}</div></div>`;
-                                if (s["答案"]) answers.push({ no: qNo, ans: s["答案"] });
-                                return;
-                            }
-                            const qt = (s["题目"] || "").trim();
-                            bodyHtml += `<div class="question"><span class="q-num">${qNo}.</span><span class="q-text">${esc(qt)}${figHtml(s["图"])}　<span class="answer-blank"></span></span></div>`;
-                            answers.push({ no: qNo, ans: (s["答案"] || "").trim() });
-                        });
-                        bodyHtml += "</div>";
+                    sections.forEach((sec) => {
+                        if (sec.kp !== lastKp) {
+                            if (lastKp !== null) bodyHtml += "</div>";
+                            bodyHtml += `<div class="kp-section"><div class="kp-title">【${esc(sec.kp)}】</div>`;
+                            lastKp = sec.kp;
+                        }
+                        qNo++;
+                        bodyHtml += `<div class="question crop-question"><span class="q-num">${qNo}.</span><div class="crop-image-wrap"><img class="crop-img" src="${esc(sec.image)}" alt="错题切片">${maskHtml(sec.masks)}</div></div>`;
                     });
-
-                    let ansHtml = answers.length
-                        ? '<div class="answers-page"><div class="answers-title">参考答案</div>'
-                        : "";
-                    answers.forEach((a) => {
-                        ansHtml += `<div class="answer-item"><span class="q-num">${a.no}.</span><span>${esc(a.ans)}</span></div>`;
-                    });
-                    if (answers.length) ansHtml += "</div>";
+                    bodyHtml += "</div>";
 
                     paper.innerHTML = `
-                        <div class="paper-title">${title}</div>
-                        <div class="paper-subtitle">${mode === "cropped" ? "由已确认的错题切片组成" : "依据错题本自动生成 · 人教版五年级"}</div>
+                        <div class="paper-title">数学错题重练卷</div>
+                        <div class="paper-subtitle">由已确认的错题切片组成</div>
                         <div class="paper-meta"><span>姓名：＿＿＿＿＿＿</span><span>日期：${today}</span><span>共 ${qNo} 题</span></div>
                         <div id="questionPart">${bodyHtml}</div>
-                        ${ansHtml}
                     `;
                 });
         }
 
-        paperMode.onchange = buildPaper;
         buildPaper();
     </script>
 </body>
