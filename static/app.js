@@ -337,7 +337,7 @@ function openCropReview(result, question) {
     cropReviewQuestion = question;
     cropReviewFilename = result.preview_filename;
     cropRanges = (result.ranges || []).map((range) => [range[0], range[1]]);
-    cropReviewHint.textContent = "色块由红笔标记位置自动生成，请核对后保存；可删除错误框，或在图片上拖动新增范围。";
+    cropReviewHint.textContent = "请在图片上从每道错题的上边缘拖动到下边缘，为每道题画一个范围，画完后点“确认保存”。";
     cropReviewImage = new Image();
     cropReviewImage.onload = () => {
         cropReviewCanvas.width = cropReviewImage.naturalWidth;
