@@ -24,8 +24,15 @@ venv/
 # Editor and OS files
 .vscode/
 .idea/
+.kilo/
 .DS_Store
 Thumbs.db
 
 # Local server logs
 _server.log
+_server_err.log
+
+# Local scratch / one-off artifacts (not part of the app)
+transcript.md
+cubes_figure.svg
+cubes_figure_preview.png
