@@ -1,5 +1,6 @@
 import json
 import shutil
+import time
 import uuid
 from datetime import timezone
 from pathlib import Path
@@ -60,6 +61,26 @@ def _delete_file(path: str | Path) -> None:
         Path(path).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _delete_previous_previews(directory: Path, stem: str) -> None:
+    for path in directory.glob(f"{stem}_recorrect_preview_*_page.jpg"):
+        _delete_file(path)
+
+
+def _sweep_abandoned_previews(
+    directory: Path = UPLOAD_DIR, max_age_hours: int = 24
+) -> None:
+    cutoff = time.time() - max_age_hours * 3600
+    for path in directory.glob("*_recorrect_preview_*_page.jpg"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                _delete_file(path)
+        except OSError:
+            pass
+
+
+_sweep_abandoned_previews()
 
 
 @app.get("/")
@@ -317,6 +338,7 @@ def preview_manual_recorrection(
         source_path = Path(question.source_image_path)
     if not source_path.is_file():
         raise HTTPException(404, "原卷图片不存在")
+    _delete_previous_previews(UPLOAD_DIR, source_path.stem)
     stem = f"{source_path.stem}_recorrect_preview_{uuid.uuid4().hex[:10]}"
     try:
         result = process_page(source_path, UPLOAD_DIR, stem, payload.points)
