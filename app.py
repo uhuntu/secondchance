@@ -151,11 +151,14 @@ async def create_question(
     file_path = UPLOAD_DIR / filename
     file_path.write_bytes(content)
 
+    # 单图直传没有走"校正+切割"流水线，对应原卷只有一张图，
+    # 视为用户已确认，可直接进练习卷。
     question = Question(
         subject=subject.strip(),
         knowledge_point=knowledge_point.strip(),
         note=note.strip(),
         image_path=str(file_path),
+        crop_reviewed=True,
     )
     db.add(question)
     db.commit()
