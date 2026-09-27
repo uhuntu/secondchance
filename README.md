@@ -54,7 +54,7 @@ python -m uvicorn app:app --port 8010
   空练习卷也会提示先去确认。
 - 遮挡坐标按图片宽高的千分比存储，重新打印到不同尺寸时依然对齐。
 - 删除某道题会一并删除它的照片；删除一组里的最后一道题时，会连带删除共享的整页原图。
-- 上传限制：jpg / png / webp / gif / heic，单张 ≤ 10MB。
+- 上传限制：jpg / png / webp / gif / heic，单张 ≤ 10MB。HEIC（iPhone 照片）上传时自动转成 JPG。
 
 ## 项目结构
 

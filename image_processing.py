@@ -1,11 +1,23 @@
 """Automatic worksheet straightening and red-mark based question cropping."""
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
+
+
+def heic_to_jpeg_bytes(content: bytes) -> bytes:
+    """HEIC 照片浏览器无法直接显示，入库前统一转码为 JPG 字节流。"""
+    with Image.open(io.BytesIO(content)) as img:
+        buffer = io.BytesIO()
+        ImageOps.exif_transpose(img).convert("RGB").save(buffer, "JPEG", quality=92)
+        return buffer.getvalue()
 
 
 @dataclass

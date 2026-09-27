@@ -1,10 +1,12 @@
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import cv2
 import numpy as np
+from PIL import Image
 
-from image_processing import process_page
+from image_processing import heic_to_jpeg_bytes, process_page
 
 
 def test_red_marks_create_question_bands():
@@ -65,8 +67,18 @@ def test_photo_frame_is_not_mistaken_for_paper():
         assert not result.page_detected
 
 
+def test_heic_bytes_are_transcoded_to_jpeg():
+    buffer = BytesIO()
+    Image.new("RGB", (64, 48), (200, 30, 30)).save(buffer, format="HEIF")
+    jpeg = heic_to_jpeg_bytes(buffer.getvalue())
+    with Image.open(BytesIO(jpeg)) as image:
+        assert image.format == "JPEG"
+        assert image.size == (64, 48)
+
+
 if __name__ == "__main__":
     test_red_marks_create_question_bands()
     test_manual_corners_warp_page_before_cropping()
     test_photo_frame_is_not_mistaken_for_paper()
+    test_heic_bytes_are_transcoded_to_jpeg()
     print("image processing tests passed")

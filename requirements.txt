@@ -4,3 +4,4 @@ sqlalchemy
 python-multipart
 opencv-python-headless
 Pillow
+pillow-heif

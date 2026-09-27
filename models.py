@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 
 from database import Base
 
@@ -15,6 +15,7 @@ class Question(Base):
     image_path = Column(String(300), nullable=False)
     source_image_path = Column(String(300), default="")  # 自动切题前的整页原图
     answer_masks = Column(Text, default="")       # 练习卷答案遮挡区域（JSON）
+    crop_reviewed = Column(Boolean, nullable=False, default=False)  # 已在"确认错题切割"里人工确认
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), index=True
     )

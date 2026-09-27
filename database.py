@@ -11,9 +11,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-def add_column_if_missing(table: str, column: str, ddl: str):
+def add_column_if_missing(target_engine, table: str, column: str, ddl: str):
     """SQLite 不支持 IF NOT EXISTS 加列，用异常兜底做幂等迁移"""
-    with engine.begin() as conn:
+    with target_engine.begin() as conn:
         try:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
         except OperationalError:

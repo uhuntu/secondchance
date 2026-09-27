@@ -14,7 +14,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database import Base, add_column_if_missing, engine, get_db
-from image_processing import crop_image_ranges, process_page
+from image_processing import crop_image_ranges, heic_to_jpeg_bytes, process_page
 from models import Question
 
 BASE_DIR = Path(__file__).parent
@@ -22,15 +22,27 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic"}
+HEIC_EXTENSIONS = {".heic", ".heif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
-Base.metadata.create_all(bind=engine)
-# 旧库补齐字段（幂等）
-for _col, _ddl in [
-    ("source_image_path", "TEXT DEFAULT ''"),
-    ("answer_masks", "TEXT DEFAULT ''"),
-]:
-    add_column_if_missing("questions", _col, _ddl)
+
+def ensure_schema(target_engine) -> None:
+    """建表 + 旧库补齐字段（幂等）。旧数据把确认状态记在文件名里，这里一并回填。"""
+    Base.metadata.create_all(bind=target_engine)
+    for _col, _ddl in [
+        ("source_image_path", "TEXT DEFAULT ''"),
+        ("answer_masks", "TEXT DEFAULT ''"),
+        ("crop_reviewed", "BOOLEAN NOT NULL DEFAULT 0"),
+    ]:
+        add_column_if_missing(target_engine, "questions", _col, _ddl)
+    with target_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "UPDATE questions SET crop_reviewed = 1 "
+            "WHERE image_path LIKE '%\\_reviewed\\_%' ESCAPE '\\'"
+        )
+
+
+ensure_schema(engine)
 
 app = FastAPI(title="错题采集系统")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -50,7 +62,7 @@ def question_to_dict(q: Question) -> dict:
         "source_image_url": (
             f"/uploads/{Path(q.source_image_path).name}" if q.source_image_path else ""
         ),
-        "crop_reviewed": "_reviewed_" in Path(q.image_path).name,
+        "crop_reviewed": bool(q.crop_reviewed),
         "answer_masks": q.answer_masks or "[]",
         "created_at": created_at.isoformat(),
     }
@@ -81,6 +93,16 @@ def _sweep_abandoned_previews(
 
 
 _sweep_abandoned_previews()
+
+
+def _normalize_upload(content: bytes, ext: str) -> tuple[bytes, str]:
+    """HEIC 浏览器无法直接显示，统一转码为 JPG 再入库。"""
+    if ext in HEIC_EXTENSIONS:
+        try:
+            return heic_to_jpeg_bytes(content), ".jpg"
+        except Exception as exc:
+            raise HTTPException(400, f"HEIC 照片解码失败：{str(exc)[:200]}")
+    return content, ext
 
 
 @app.get("/")
@@ -116,13 +138,14 @@ async def create_question(
 ):
     ext = Path(photo.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp")
+        raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp/gif/heic")
 
     content = await photo.read()
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(400, "文件超过 10MB 限制")
     if not content:
         raise HTTPException(400, "文件内容为空")
+    content, ext = _normalize_upload(content, ext)
 
     filename = f"{uuid.uuid4().hex}{ext}"
     file_path = UPLOAD_DIR / filename
@@ -149,12 +172,13 @@ async def import_page(
     """保存整页原图，自动校正并按红色批改标记切成候选错题。"""
     ext = Path(photo.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp")
+        raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp/gif/heic")
     content = await photo.read()
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(400, "文件超过 10MB 限制")
     if not content:
         raise HTTPException(400, "文件内容为空")
+    content, ext = _normalize_upload(content, ext)
 
     stem = uuid.uuid4().hex
     source_path = UPLOAD_DIR / f"{stem}_original{ext}"
@@ -227,6 +251,7 @@ def _replace_question_crops(
     source_image_path: str,
     crop_paths: list[Path],
     result=None,
+    confirmed: bool = False,
 ):
     group = (
         db.query(Question)
@@ -244,12 +269,14 @@ def _replace_question_crops(
             item.image_path = str(crop_path)
             item.knowledge_point = ""
             item.answer_masks = ""
+            item.crop_reviewed = confirmed
         for crop_path in new_paths[len(group):]:
             db.add(
                 Question(
                     subject=question.subject,
                     image_path=str(crop_path),
                     source_image_path=source_image_path,
+                    crop_reviewed=confirmed,
                 )
             )
         for item in group[len(new_paths):]:
@@ -407,7 +434,7 @@ def confirm_manual_recrops(
         crop_paths.append(path)
     try:
         response = _replace_question_crops(
-            question, db, question.source_image_path, crop_paths
+            question, db, question.source_image_path, crop_paths, confirmed=True
         )
     finally:
         _delete_file(preview_path)
