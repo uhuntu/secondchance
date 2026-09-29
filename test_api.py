@@ -1,86 +1,175 @@
-"""端到端 API 验证脚本：增、查、改、删、照片访问"""
+"""端到端 API 测试：基于 TestClient + 临时数据库/上传目录，不依赖真实服务进程。
+
+运行：python -m pytest test_api.py
+"""
 import base64
 import json
-import urllib.parse
-import urllib.request
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
-BASE = "http://127.0.0.1:8010"
+import cv2
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+import app as app_module
+from app import app, ensure_schema
+from database import get_db
+
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
 
 
-def req(method, path, body=None, headers=None):
-    r = urllib.request.Request(BASE + path, data=body, method=method, headers=headers or {})
-    with urllib.request.urlopen(r) as resp:
-        data = resp.read()
-        return resp.status, json.loads(data) if data else None
+def _synthetic_page_jpeg() -> bytes:
+    """一张带边框和三个红叉的作业页，用来验证自动切题。"""
+    page = np.full((1200, 800, 3), 255, dtype=np.uint8)
+    cv2.rectangle(page, (45, 35), (755, 1165), (20, 20, 20), 4)
+    for y in (250, 650, 980):
+        cv2.line(page, (600, y - 25), (650, y + 25), (0, 0, 220), 10)
+        cv2.line(page, (650, y - 25), (600, y + 25), (0, 0, 220), 10)
+    ok, buffer = cv2.imencode(".jpg", page, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    assert ok
+    return buffer.tobytes()
 
 
-# 1. POST multipart 上传
-boundary = "----testboundary1234"
-fields = {
-    "subject": "数学",
-    "knowledge_point": "分数计算",
-    "note": "正确答案 3/4",
-}
-parts = b""
-for k, v in fields.items():
-    parts += (
-        f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
-    ).encode()
-parts += (
-    f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; '
-    f'filename="wrong.png"\r\nContent-Type: image/png\r\n\r\n'
-).encode() + PNG + f"\r\n--{boundary}--\r\n".encode()
+@pytest.fixture()
+def api():
+    """隔离环境：临时 SQLite 库 + 临时上传目录，覆盖 get_db 依赖和 UPLOAD_DIR。"""
+    with TemporaryDirectory() as directory:
+        directory = Path(directory)
+        engine = create_engine(f"sqlite:///{directory / 'test.db'}")
+        ensure_schema(engine)
+        TestSession = sessionmaker(bind=engine)
+        uploads = directory / "uploads"
+        uploads.mkdir()
 
-status, created = req(
-    "POST", "/api/questions", parts, {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-)
-assert status == 201, created
-assert created["subject"] == "数学" and created["knowledge_point"] == "分数计算"
-print(f"1. POST 创建成功 id={created['id']}")
+        def override_get_db():
+            db = TestSession()
+            try:
+                yield db
+            finally:
+                db.close()
 
-qid = created["id"]
+        original_uploads = app_module.UPLOAD_DIR
+        app.dependency_overrides[get_db] = override_get_db
+        app_module.UPLOAD_DIR = uploads
+        try:
+            with TestClient(app) as client:
+                yield SimpleNamespace(
+                    client=client, uploads=uploads, Session=TestSession
+                )
+        finally:
+            app.dependency_overrides.clear()
+            app_module.UPLOAD_DIR = original_uploads
+            engine.dispose()  # Windows 下连接池不释放会锁住临时库文件
 
-# 2. 列表 + 过滤 + 搜索
-status, lst = req("GET", "/api/questions")
-assert any(q["id"] == qid for q in lst)
-qs = urllib.parse.urlencode({"subject": "数学"})
-status, lst = req("GET", f"/api/questions?{qs}")
-assert len(lst) == 1, lst
-qs = urllib.parse.urlencode({"keyword": "分数"})
-status, lst = req("GET", f"/api/questions?{qs}")
-assert len(lst) == 1, lst
-qs = urllib.parse.urlencode({"keyword": "不存在的词"})
-status, lst = req("GET", f"/api/questions?{qs}")
-assert lst == []
-print("2. 列表/科目过滤/关键词搜索 通过")
 
-# 3. 详情 + 照片访问
-status, detail = req("GET", f"/api/questions/{qid}")
-assert detail["note"] == "正确答案 3/4"
-r = urllib.request.urlopen(BASE + detail["image_url"])
-assert r.status == 200 and r.read() == PNG
-print("3. 详情 + 照片原图访问 通过")
+def _create_question(api, name="wrong.png", content=PNG, subject="数学"):
+    return api.client.post(
+        "/api/questions",
+        data={"subject": subject, "knowledge_point": "分数计算", "note": "正确答案 3/4"},
+        files={"photo": (name, content, "image/png")},
+    )
 
-# 4. PUT 编辑
-body = json.dumps({"knowledge_point": "约分", "note": "已订正"}).encode()
-status, updated = req("PUT", f"/api/questions/{qid}", body, {"Content-Type": "application/json"})
-assert updated["knowledge_point"] == "约分" and updated["note"] == "已订正"
-print("4. PUT 编辑 通过")
 
-# 5. DELETE 删除
-status, _ = req("DELETE", f"/api/questions/{qid}")
-assert status == 204
-try:
-    req("GET", f"/api/questions/{qid}")
-    raise SystemExit("删除后仍能查到，失败")
-except urllib.error.HTTPError as e:
-    assert e.code == 404
-import pathlib
-leftover = list(pathlib.Path("uploads").glob("*.png"))
-assert not leftover, leftover  # 测试图已清理；残留的是 curl 乱码测试数据
-print("5. DELETE 删除（记录+照片）通过")
+def test_full_lifecycle(api):
+    """增 → 查/过滤/搜索 → 详情+原图 → 改 → 删（记录和照片都清掉）。"""
+    created = _create_question(api)
+    assert created.status_code == 201, created.text
+    question = created.json()
+    assert question["subject"] == "数学" and question["knowledge_point"] == "分数计算"
+    # 单图直传视为已确认，可直接进练习卷
+    assert question["crop_reviewed"] is True
 
-print("\n全部端到端测试通过 ✔")
+    # 列表 + 科目过滤 + 关键词搜索
+    listed = api.client.get("/api/questions").json()
+    assert any(q["id"] == question["id"] for q in listed)
+    assert all(q["subject"] == "数学" for q in api.client.get("/api/questions", params={"subject": "数学"}).json())
+    assert any(q["id"] == question["id"] for q in api.client.get("/api/questions", params={"keyword": "分数"}).json())
+    assert api.client.get("/api/questions", params={"keyword": "不存在的词"}).json() == []
+
+    # 详情 + 照片原图访问
+    detail = api.client.get(f"/api/questions/{question['id']}").json()
+    assert detail["note"] == "正确答案 3/4"
+    image = api.client.get(detail["image_url"])
+    assert image.status_code == 200 and image.content == PNG
+
+    # 编辑
+    updated = api.client.put(
+        f"/api/questions/{question['id']}",
+        json={"knowledge_point": "约分", "note": "已订正"},
+    ).json()
+    assert updated["knowledge_point"] == "约分" and updated["note"] == "已订正"
+
+    # 删除：记录 404、照片文件也清掉
+    assert api.client.delete(f"/api/questions/{question['id']}").status_code == 204
+    assert api.client.get(f"/api/questions/{question['id']}").status_code == 404
+    assert list(api.uploads.glob("*.png")) == []
+
+
+def test_create_rejects_bad_extension(api):
+    response = api.client.post(
+        "/api/questions",
+        data={"subject": "数学"},
+        files={"photo": ("notes.txt", b"hello", "text/plain")},
+    )
+    assert response.status_code == 400
+    assert "不支持的文件类型" in response.json()["detail"]
+
+
+def test_create_rejects_empty_and_oversized_files(api):
+    empty = _create_question(api, content=b"")
+    assert empty.status_code == 400 and "内容为空" in empty.json()["detail"]
+
+    oversized = _create_question(api, content=b"\0" * (10 * 1024 * 1024 + 1))
+    assert oversized.status_code == 400 and "10MB" in oversized.json()["detail"]
+
+
+def test_answer_masks_roundtrip_and_validation(api):
+    question = _create_question(api).json()
+
+    masks = [[100, 100, 200, 200], [400.5, 300.25, 150, 80]]
+    saved = api.client.put(
+        f"/api/questions/{question['id']}/answer-masks", json={"masks": masks}
+    )
+    assert saved.status_code == 200
+    assert json.loads(saved.json()["answer_masks"]) == masks
+
+    # 超出图片范围（千分比坐标，x+width > 1000）
+    assert api.client.put(
+        f"/api/questions/{question['id']}/answer-masks",
+        json={"masks": [[900, 100, 200, 100]]},
+    ).status_code == 400
+    # 太小
+    assert api.client.put(
+        f"/api/questions/{question['id']}/answer-masks",
+        json={"masks": [[100, 100, 2, 2]]},
+    ).status_code == 400
+    # 格式错误（不是 4 个元素）
+    assert api.client.put(
+        f"/api/questions/{question['id']}/answer-masks",
+        json={"masks": [[100, 100, 200]]},
+    ).status_code == 400
+
+
+def test_import_page_splits_red_marks_into_unconfirmed_candidates(api):
+    """整页上传：自动放平、按红叉切成候选错题，且都未确认（不进练习卷）。"""
+    response = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _synthetic_page_jpeg(), "image/jpeg")},
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["page_detected"] is True
+    assert payload["red_mark_count"] == 3
+    assert len(payload["questions"]) == 3
+    for question in payload["questions"]:
+        assert question["crop_reviewed"] is False
+        assert question["source_image_url"]  # 归组到同一张原卷
+        # 候选切片可通过 /uploads 访问
+        assert api.client.get(question["image_url"]).status_code == 200
