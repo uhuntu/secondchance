@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import app as app_module
 from app import app, ensure_schema
 from database import get_db
+from models import Question
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -156,6 +157,17 @@ def test_answer_masks_roundtrip_and_validation(api):
     ).status_code == 400
 
 
+def test_records_store_filenames_only(api):
+    """入库只存文件名：questions.db 和 uploads/ 可随项目整体搬家。"""
+    created = _create_question(api).json()
+    db = api.Session()
+    try:
+        question = db.get(Question, created["id"])
+        assert question.image_path == Path(created["image_url"]).name
+    finally:
+        db.close()
+
+
 def test_import_page_splits_red_marks_into_unconfirmed_candidates(api):
     """整页上传：自动放平、按红叉切成候选错题，且都未确认（不进练习卷）。"""
     response = api.client.post(
@@ -173,3 +185,11 @@ def test_import_page_splits_red_marks_into_unconfirmed_candidates(api):
         assert question["source_image_url"]  # 归组到同一张原卷
         # 候选切片可通过 /uploads 访问
         assert api.client.get(question["image_url"]).status_code == 200
+    # 原卷和切片在库里都只存文件名
+    db = api.Session()
+    try:
+        stored = [db.get(Question, q["id"]) for q in payload["questions"]]
+        assert all("\\" not in q.image_path and "/" not in q.image_path for q in stored)
+        assert all("\\" not in q.source_image_path for q in stored)
+    finally:
+        db.close()

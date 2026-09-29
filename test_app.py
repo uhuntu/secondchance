@@ -99,6 +99,58 @@ def test_ensure_schema_backfills_crop_reviewed_from_filenames():
             engine.dispose()  # Windows 下连接池不释放会锁住临时库文件
 
 
+def test_ensure_schema_migrates_absolute_paths_to_filenames():
+    """旧库存绝对路径，项目一搬家全断；启动时统一收敛成文件名（幂等）。"""
+    with TemporaryDirectory() as directory:
+        engine = create_engine(f"sqlite:///{Path(directory) / 'abs.db'}")
+        try:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "CREATE TABLE questions ("
+                    "id INTEGER PRIMARY KEY, subject VARCHAR(50) NOT NULL,"
+                    "knowledge_point VARCHAR(200), note TEXT,"
+                    "image_path VARCHAR(300) NOT NULL, source_image_path VARCHAR(300),"
+                    "answer_masks TEXT, created_at DATETIME)"
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO questions (subject, image_path, source_image_path)"
+                    " VALUES ('数学',"
+                    " 'C:\\Users\\huntl\\wrong-question-book\\uploads\\abc_reviewed_1_q1.jpg',"
+                    " 'C:\\Users\\huntl\\wrong-question-book\\uploads\\abc_original.jpg')"
+                )
+            ensure_schema(engine)
+            with engine.begin() as conn:
+                rows = conn.exec_driver_sql(
+                    "SELECT image_path, source_image_path FROM questions"
+                ).fetchall()
+            assert rows[0] == ("abc_reviewed_1_q1.jpg", "abc_original.jpg")
+
+            # 再跑一次不变（幂等）
+            ensure_schema(engine)
+            with engine.begin() as conn:
+                rows = conn.exec_driver_sql(
+                    "SELECT image_path, source_image_path FROM questions"
+                ).fetchall()
+            assert rows[0] == ("abc_reviewed_1_q1.jpg", "abc_original.jpg")
+        finally:
+            engine.dispose()
+
+
+def test_stored_name_and_resolve_upload(tmp_path, monkeypatch):
+    import app as app_module
+    from app import _resolve_upload, _stored_name
+
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", tmp_path)
+    assert _stored_name("/any/where/uploads/abc_q1.jpg") == "abc_q1.jpg"
+    assert _stored_name(Path("abc_q1.jpg")) == "abc_q1.jpg"
+    # 新数据：文件名 → 当前上传目录（项目搬家后依然找得到）
+    assert _resolve_upload("abc_q1.jpg") == tmp_path / "abc_q1.jpg"
+    # 旧数据：绝对路径且文件还在时照常使用
+    legacy = tmp_path / "legacy.jpg"
+    legacy.write_bytes(b"x")
+    assert _resolve_upload(str(legacy)) == legacy
+
+
 def _fresh_engine_with_schema(directory: Path):
     """建一个独立的临时 SQLite 引擎并跑一次 ensure_schema，返回 (engine, SessionLocal)。"""
     engine = create_engine(f"sqlite:///{directory / 'test.db'}")

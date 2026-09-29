@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from database import Base, add_column_if_missing, engine, get_db
@@ -20,6 +20,20 @@ from models import Question
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+def _stored_name(path: str | Path) -> str:
+    """入库只存文件名：questions.db 和 uploads/ 可以随项目整体搬家。"""
+    return Path(path).name
+
+
+def _resolve_upload(name: str | Path) -> Path:
+    """库里的文件名 → 实际路径；兼容旧库残留的绝对路径（文件还在就照用）。"""
+    path = Path(name)
+    if path.is_absolute() and path.is_file():
+        return path
+    return UPLOAD_DIR / path.name
+
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic"}
 HEIC_EXTENSIONS = {".heic", ".heif"}
@@ -40,6 +54,24 @@ def ensure_schema(target_engine) -> None:
             "UPDATE questions SET crop_reviewed = 1 "
             "WHERE image_path LIKE '%\\_reviewed\\_%' ESCAPE '\\'"
         )
+        # 旧库存的是绝对路径，项目一挪目录全断；统一收敛成文件名（幂等）。
+        for qid, image_path, source_image_path in conn.exec_driver_sql(
+            "SELECT id, image_path, source_image_path FROM questions"
+        ).fetchall():
+            new_image = _stored_name(image_path) if image_path else image_path
+            new_source = (
+                _stored_name(source_image_path)
+                if source_image_path
+                else source_image_path
+            )
+            if new_image != image_path or new_source != source_image_path:
+                conn.execute(
+                    text(
+                        "UPDATE questions SET image_path = :image,"
+                        " source_image_path = :source WHERE id = :id"
+                    ),
+                    {"image": new_image, "source": new_source, "id": qid},
+                )
 
 
 ensure_schema(engine)
@@ -157,7 +189,7 @@ async def create_question(
         subject=subject.strip(),
         knowledge_point=knowledge_point.strip(),
         note=note.strip(),
-        image_path=str(file_path),
+        image_path=_stored_name(file_path),
         crop_reviewed=True,
     )
     db.add(question)
@@ -197,8 +229,8 @@ async def import_page(
     for crop_path in result.crop_paths:
         question = Question(
             subject=subject.strip() or "数学",
-            image_path=str(crop_path),
-            source_image_path=str(source_path),
+            image_path=_stored_name(crop_path),
+            source_image_path=_stored_name(source_path),
         )
         db.add(question)
         questions.append(question)
@@ -219,7 +251,7 @@ def _recorrect_saved_page(
 ):
     source_image_path = question.source_image_path
     if not source_image_path:
-        current_path = Path(question.image_path)
+        current_path = _resolve_upload(question.image_path)
         if not current_path.is_file():
             raise HTTPException(404, "已保存的照片文件不存在，请重新上传照片")
         source_path = UPLOAD_DIR / (
@@ -229,11 +261,11 @@ def _recorrect_saved_page(
             shutil.copy2(current_path, source_path)
         except OSError as exc:
             raise HTTPException(500, f"原图备份失败：{str(exc)[:200]}")
-        source_image_path = str(source_path)
+        source_image_path = _stored_name(source_path)
         question.source_image_path = source_image_path
         db.flush()
     else:
-        source_path = Path(source_image_path)
+        source_path = _resolve_upload(source_image_path)
     if not source_path.is_file():
         raise HTTPException(404, "整张原卷文件已丢失，请重新上传照片")
 
@@ -266,10 +298,10 @@ def _replace_question_crops(
         .all()
     )
     new_paths = list(crop_paths)
-    old_paths = [Path(item.image_path) for item in group]
+    old_paths = [_resolve_upload(item.image_path) for item in group]
     try:
         for item, crop_path in zip(group, new_paths):
-            item.image_path = str(crop_path)
+            item.image_path = _stored_name(crop_path)
             item.knowledge_point = ""
             item.answer_masks = ""
             item.crop_reviewed = confirmed
@@ -277,7 +309,7 @@ def _replace_question_crops(
             db.add(
                 Question(
                     subject=question.subject,
-                    image_path=str(crop_path),
+                    image_path=_stored_name(crop_path),
                     source_image_path=source_image_path,
                     crop_reviewed=confirmed,
                 )
@@ -352,7 +384,7 @@ def preview_manual_recorrection(
     if not question:
         raise HTTPException(404, "错题不存在")
     if not question.source_image_path:
-        current_path = Path(question.image_path)
+        current_path = _resolve_upload(question.image_path)
         if not current_path.is_file():
             raise HTTPException(404, "已保存的照片文件不存在")
         source_path = UPLOAD_DIR / (
@@ -362,10 +394,10 @@ def preview_manual_recorrection(
             shutil.copy2(current_path, source_path)
         except OSError as exc:
             raise HTTPException(500, f"原图备份失败：{str(exc)[:200]}")
-        question.source_image_path = str(source_path)
+        question.source_image_path = _stored_name(source_path)
         db.commit()
     else:
-        source_path = Path(question.source_image_path)
+        source_path = _resolve_upload(question.source_image_path)
     if not source_path.is_file():
         raise HTTPException(404, "原卷图片不存在")
     _delete_previous_previews(UPLOAD_DIR, source_path.stem)
@@ -404,7 +436,7 @@ def confirm_manual_recrops(
         raise HTTPException(404, "错题不存在")
     if not question.source_image_path:
         raise HTTPException(400, "该记录没有整张原卷")
-    source_path = Path(question.source_image_path)
+    source_path = _resolve_upload(question.source_image_path)
     filename = Path(payload.preview_filename).name
     if (
         filename != payload.preview_filename
@@ -535,7 +567,7 @@ def delete_question(question_id: int, db: Session = Depends(get_db)):
     if not question:
         raise HTTPException(404, "错题不存在")
     source_path = question.source_image_path
-    _delete_file(question.image_path)
+    _delete_file(_resolve_upload(question.image_path))
     db.delete(question)
     db.commit()
     if source_path:
@@ -545,12 +577,15 @@ def delete_question(question_id: int, db: Session = Depends(get_db)):
             .first()
         )
         if not still_used:
-            _delete_file(source_path)
+            _delete_file(_resolve_upload(source_path))
 
 
 @app.get("/uploads/{filename}")
 def get_upload(filename: str):
-    file_path = UPLOAD_DIR / filename
+    safe_name = Path(filename).name
+    if safe_name != filename or not safe_name:
+        raise HTTPException(400, "非法的文件名")
+    file_path = UPLOAD_DIR / safe_name
     if not file_path.is_file():
         raise HTTPException(404, "文件不存在")
     return FileResponse(file_path)
