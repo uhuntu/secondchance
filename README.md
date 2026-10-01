@@ -58,6 +58,18 @@ python -m uvicorn app:app --port 8010
 - 删除某道题会一并删除它的照片；删除一组里的最后一道题时，会连带删除共享的整页原图。
 - 上传限制：jpg / png / webp / gif / heic，单张 ≤ 10MB。HEIC（iPhone 照片）上传时自动转成 JPG。
 
+## 备份
+
+`questions.db` 和 `uploads/` 是唯一不可再生的资产，建议定期打包：
+
+```bash
+python backup.py                # 输出到 backups/
+python backup.py "D:/备份"      # 指定输出目录
+```
+
+数据库用 sqlite3 的在线备份 API 导出，服务开着也能拿到一致的快照。
+zip 内就是项目结构（`questions.db` + `uploads/`），解压即可还原。
+
 ## 项目结构
 
 ```
@@ -66,7 +78,9 @@ database.py          SQLAlchemy 引擎 / 会话 / 幂等加列迁移
 models.py            Question 表结构
 image_processing.py  页面放平（透视校正）+ 红色标记识别 + 切题
 static/              前端（index.html 主界面、paper.html 练习卷、app.js、style.css）
+backup.py            题库 + 照片打包快照
 test_api.py          端到端 API 自测
+test_app.py          文件生命周期 / 迁移 / 切题替换的单元测试
 test_image_processing.py  图像处理单元测试
 ```
 

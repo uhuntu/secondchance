@@ -38,6 +38,24 @@ def _resolve_upload(name: str | Path) -> Path:
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic"}
 HEIC_EXTENSIONS = {".heic", ".heif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+_CHUNK_SIZE = 256 * 1024
+
+
+async def _read_upload(photo: UploadFile, limit: int = MAX_FILE_SIZE) -> bytes:
+    """分块读取，超出上限立刻中止：大文件不会被先整份读进内存再判大小。"""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await photo.read(_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(400, f"文件超过 {limit // (1024 * 1024)}MB 限制")
+        chunks.append(chunk)
+    if not chunks:
+        raise HTTPException(400, "文件内容为空")
+    return b"".join(chunks)
 
 
 def ensure_schema(target_engine) -> None:
@@ -172,11 +190,7 @@ async def create_question(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp/gif/heic")
 
-    content = await photo.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(400, "文件超过 10MB 限制")
-    if not content:
-        raise HTTPException(400, "文件内容为空")
+    content = await _read_upload(photo)
     content, ext = _normalize_upload(content, ext)
 
     filename = f"{uuid.uuid4().hex}{ext}"
@@ -208,11 +222,7 @@ async def import_page(
     ext = Path(photo.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp/gif/heic")
-    content = await photo.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(400, "文件超过 10MB 限制")
-    if not content:
-        raise HTTPException(400, "文件内容为空")
+    content = await _read_upload(photo)
     content, ext = _normalize_upload(content, ext)
 
     stem = uuid.uuid4().hex

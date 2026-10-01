@@ -1,5 +1,6 @@
 import os
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -229,6 +230,46 @@ def test_replace_question_crops_grows_group_and_resets_metadata():
             db.close()
         finally:
             engine.dispose()
+
+
+def test_backup_bundles_database_and_uploads(tmp_path):
+    """备份 zip 里应有可还原的 questions.db 和 uploads/，且不夹带项目里其他文件。"""
+    import backup
+
+    project = tmp_path / "project"
+    uploads = project / "uploads"
+    uploads.mkdir(parents=True)
+    (uploads / "abc_q1.jpg").write_bytes(b"image")
+    (uploads / "abc_original.jpg").write_bytes(b"source")
+    (project / "notes.txt").write_bytes(b"scratch")
+
+    db_path = project / "questions.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        ensure_schema(engine)
+        db = sessionmaker(bind=engine)()
+        db.add(Question(subject="数学", image_path="abc_q1.jpg"))
+        db.commit()
+        db.close()
+    finally:
+        engine.dispose()
+
+    original_db, original_uploads = backup.DB_PATH, backup.UPLOAD_DIR
+    backup.DB_PATH, backup.UPLOAD_DIR = db_path, uploads
+    try:
+        target = backup.create_backup(tmp_path / "backups")
+    finally:
+        backup.DB_PATH, backup.UPLOAD_DIR = original_db, original_uploads
+
+    assert target.is_file()
+    with zipfile.ZipFile(target) as archive:
+        assert set(archive.namelist()) == {
+            "questions.db",
+            "uploads/abc_q1.jpg",
+            "uploads/abc_original.jpg",
+        }
+        # 快照是一致可读的库，不是复制一半的文件
+        assert archive.read("uploads/abc_q1.jpg") == b"image"
 
 
 def test_replace_question_crops_shrinks_group_and_deletes_orphan_files():

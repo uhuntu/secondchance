@@ -9,6 +9,7 @@ questions.db-*
 questions.db.backup-*
 uploads/
 figures/
+backups/
 
 # Python caches and local environments
 __pycache__/
