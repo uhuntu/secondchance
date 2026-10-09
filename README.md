@@ -17,6 +17,18 @@ python -m uvicorn app:app --port 8010
 > 端口用 8010 而不是 8000：本机 8000 可能被梵想云（FanxiangCloud）自带的 nginx 占用。
 > 首次启动会自动建表（`questions.db`）并给旧库补齐缺失字段，无需手动迁移。
 
+## 手机拍照上传
+
+服务以 `--host 0.0.0.0` 启动（`start-server.bat` 已默认），手机连上同一个 Wi-Fi，
+浏览器访问 `http://<电脑局域网IP>:8010` 即可拍照上传，电脑上 `ipconfig` 可查本机 IP。
+首次开放需放行防火墙 8010 端口（管理员运行）：
+
+```bat
+netsh advfirewall firewall add rule name="WrongQuestionBook-8010" dir=in action=allow protocol=TCP localport=8010
+```
+
+> 注意：同一 Wi-Fi 下的所有设备都能访问错题本（未加口令），家庭网络请自行评估。
+
 ## 使用流程
 
 ### 1. 拍错题

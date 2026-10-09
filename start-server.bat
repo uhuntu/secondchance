@@ -4,7 +4,9 @@ cd /d "%~dp0"
 
 echo ================================
 echo   Math Mistake Notebook
-echo   http://localhost:8010
+echo   Local   http://localhost:8010
+echo   Phone   http://192.168.31.59:8010
+echo           (update the IP if your LAN address changes)
 echo ================================
 echo.
 
@@ -16,7 +18,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python -m uvicorn app:app --port 8010
+python -m uvicorn app:app --host 0.0.0.0 --port 8010
 
 echo.
 echo Server stopped. Press any key to close this window.
