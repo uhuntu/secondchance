@@ -1,6 +1,4 @@
 import json
-import shutil
-import time
 import uuid
 from datetime import timezone
 from pathlib import Path
@@ -14,12 +12,21 @@ from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from database import Base, add_column_if_missing, engine, get_db
-from image_processing import crop_image_ranges, heic_to_jpeg_bytes, process_page
+from image_processing import (
+    analyze,
+    crop_by_lines,
+    heic_to_jpeg_bytes,
+    suggest_split_lines,
+    warp_with_corners,
+)
 from models import Question
 
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+MAX_SPLITS = 20  # 一页最多切20 道，避免误操作把练习卷打成几十页
+MIN_BAND_HEIGHT = 60  # 每道题至少这么高，否则切出来的片段没法看
 
 
 def _stored_name(path: str | Path) -> str:
@@ -90,6 +97,8 @@ def ensure_schema(target_engine) -> None:
                     ),
                     {"image": new_image, "source": new_source, "id": qid},
                 )
+        # 切题不再有"待确认"环节：录进来就能直接进练习卷。
+        conn.exec_driver_sql("UPDATE questions SET crop_reviewed = 1")
 
 
 ensure_schema(engine)
@@ -125,26 +134,6 @@ def _delete_file(path: str | Path) -> None:
         pass
 
 
-def _delete_previous_previews(directory: Path, stem: str) -> None:
-    for path in directory.glob(f"{stem}_recorrect_preview_*_page.jpg"):
-        _delete_file(path)
-
-
-def _sweep_abandoned_previews(
-    directory: Path = UPLOAD_DIR, max_age_hours: int = 24
-) -> None:
-    cutoff = time.time() - max_age_hours * 3600
-    for path in directory.glob("*_recorrect_preview_*_page.jpg"):
-        try:
-            if path.stat().st_mtime < cutoff:
-                _delete_file(path)
-        except OSError:
-            pass
-
-
-_sweep_abandoned_previews()
-
-
 def _normalize_upload(content: bytes, ext: str) -> tuple[bytes, str]:
     """HEIC 浏览器无法直接显示，统一转码为 JPG 再入库。"""
     if ext in HEIC_EXTENSIONS:
@@ -153,6 +142,98 @@ def _normalize_upload(content: bytes, ext: str) -> tuple[bytes, str]:
         except Exception as exc:
             raise HTTPException(400, f"HEIC 照片解码失败：{str(exc)[:200]}")
     return content, ext
+
+
+def _save_page(image, stem: str) -> Path:
+    """存下这一页（已放平或原图），所有切割坐标都相对它。"""
+    path = UPLOAD_DIR / f"{stem}_page.jpg"
+    cv2.imwrite(str(path), image, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    return path
+
+
+def _validate_lines(lines: list, height: int) -> list[int]:
+    """切割线去重、排序、限量，并保证每道题不至于被切得太矮。"""
+    cleaned: list[int] = []
+    for line in lines:
+        value = int(line)
+        if not 0 < value < height:
+            raise HTTPException(400, "切割线超出了这一页的范围")
+        if not cleaned or value - cleaned[-1] >= MIN_BAND_HEIGHT:
+            cleaned.append(value)
+    if len(cleaned) > MAX_SPLITS:
+        raise HTTPException(400, f"一页最多切 {MAX_SPLITS + 1} 道题")
+    if cleaned and (cleaned[0] < MIN_BAND_HEIGHT or height - cleaned[-1] < MIN_BAND_HEIGHT):
+        raise HTTPException(400, "切割线离页面边缘太近，会切出过窄的题目")
+    return cleaned
+
+
+def _split_into_crops(image, lines: list[int], stem: str) -> list[Path]:
+    crops = crop_by_lines(image, lines)
+    paths = []
+    for index, crop in enumerate(crops, 1):
+        path = UPLOAD_DIR / f"{stem}_q{index}.jpg"
+        cv2.imwrite(str(path), crop, [cv2.IMWRITE_JPEG_QUALITY, 94])
+        paths.append(path)
+    return paths
+
+
+def _group_of(db: Session, source_image_path: str) -> list[Question]:
+    return (
+        db.query(Question)
+        .filter(Question.source_image_path == source_image_path)
+        .order_by(Question.id.asc())
+        .all()
+    )
+
+
+def _apply_split(
+    db: Session,
+    question: Question,
+    source_name: str,
+    crop_paths: list[Path],
+    rename_group_from: str | None = None,
+) -> list[Question]:
+    """把一页的题目整体换成新的切片集合。
+
+    按序号保留旧的知识点/遮挡：用户拖动分割线时，第 2 道题通常还是第 2 道题，
+    全清空等于逼他重录一遍。
+
+    rename_group_from：整页换了新文件（手动摆正）时，把这一组一起改指向新整页，
+    否则 source_image_path 会留在已删除的旧文件上。
+    """
+    group = (
+        _group_of(db, rename_group_from) if rename_group_from else _group_of(db, source_name)
+    )
+    old_paths = [_resolve_upload(item.image_path) for item in group]
+    try:
+        for index, item in enumerate(group):
+            if rename_group_from:
+                item.source_image_path = source_name
+            if index < len(crop_paths):
+                item.image_path = _stored_name(crop_paths[index])
+                item.crop_reviewed = True
+            else:
+                db.delete(item)
+        for crop_path in crop_paths[len(group):]:
+            db.add(
+                Question(
+                    subject=question.subject,
+                    image_path=_stored_name(crop_path),
+                    source_image_path=source_name,
+                    crop_reviewed=True,
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        for path in crop_paths:
+            _delete_file(path)
+        raise HTTPException(500, "保存切割结果失败，原记录未更改")
+
+    for path in old_paths:
+        if path not in crop_paths:
+            _delete_file(path)
+    return _group_of(db, source_name)
 
 
 @app.get("/")
@@ -186,6 +267,7 @@ async def create_question(
     photo: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    """单图直传：一张照片就是一道错题，不做切割。"""
     ext = Path(photo.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp/gif/heic")
@@ -197,8 +279,6 @@ async def create_question(
     file_path = UPLOAD_DIR / filename
     file_path.write_bytes(content)
 
-    # 单图直传没有走"校正+切割"流水线，对应原卷只有一张图，
-    # 视为用户已确认，可直接进练习卷。
     question = Question(
         subject=subject.strip(),
         knowledge_point=knowledge_point.strip(),
@@ -212,291 +292,209 @@ async def create_question(
     return question_to_dict(question)
 
 
+def _create_page(
+    db: Session,
+    subject: str,
+    content: bytes,
+    ext: str,
+    page_points: list[list[float]] | None = None,
+) -> dict:
+    """整页入库：尽力放平 → 建议分割线 → 直接切成错题。
+
+    分割只是建议：用户随后可以拖动分割线改，切得不对就删掉重来。
+    """
+    stem = uuid.uuid4().hex
+    raw_path = UPLOAD_DIR / f"{stem}_raw{ext}"
+    raw_path.write_bytes(content)
+    try:
+        analysis = analyze(raw_path)
+        if page_points is not None:
+            image = warp_with_corners(analysis.image, page_points)
+            lines = suggest_split_lines(image)
+        else:
+            image = analysis.image
+            lines = analysis.lines
+        page_detected = analysis.page_detected
+        lines = _validate_lines(lines, image.shape[0])
+        page_path = _save_page(image, stem)
+        crop_paths = _split_into_crops(image, lines, stem)
+    except HTTPException:
+        _delete_file(raw_path)
+        raise
+    except ValueError as exc:
+        _delete_file(raw_path)
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        _delete_file(raw_path)
+        raise HTTPException(400, f"照片处理失败：{str(exc)[:200]}")
+    _delete_file(raw_path)
+
+    source_name = _stored_name(page_path)
+    representative = Question(
+        subject=subject.strip() or "数学",
+        image_path=_stored_name(crop_paths[0]),
+        source_image_path=source_name,
+        crop_reviewed=True,
+    )
+    db.add(representative)
+    try:
+        db.flush()
+        questions = _apply_split(db, representative, source_name, crop_paths)
+    except HTTPException:
+        _delete_file(page_path)
+        raise
+    return {
+        "questions": [question_to_dict(q) for q in questions],
+        "page_detected": page_detected,
+        "source_image_url": f"/uploads/{source_name}",
+        "width": int(image.shape[1]),
+        "height": int(image.shape[0]),
+        "lines": lines,
+    }
+
+
 @app.post("/api/pages", status_code=201)
 async def import_page(
     subject: str = Form("数学"),
     photo: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """保存整页原图，自动校正并按红色批改标记切成候选错题。"""
+    """拍整页作业：自动切成错题，切得不理想再拖分割线调整。"""
     ext = Path(photo.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}，仅支持 jpg/png/webp/gif/heic")
     content = await _read_upload(photo)
     content, ext = _normalize_upload(content, ext)
-
-    stem = uuid.uuid4().hex
-    source_path = UPLOAD_DIR / f"{stem}_original{ext}"
-    source_path.write_bytes(content)
-    try:
-        result = process_page(source_path, UPLOAD_DIR, stem)
-    except Exception as exc:
-        source_path.unlink(missing_ok=True)
-        raise HTTPException(400, f"照片处理失败：{str(exc)[:200]}")
-    result.corrected_path.unlink(missing_ok=True)
-
-    questions = []
-    for crop_path in result.crop_paths:
-        question = Question(
-            subject=subject.strip() or "数学",
-            image_path=_stored_name(crop_path),
-            source_image_path=_stored_name(source_path),
-        )
-        db.add(question)
-        questions.append(question)
-    db.commit()
-    for question in questions:
-        db.refresh(question)
-    return {
-        "questions": [question_to_dict(question) for question in questions],
-        "page_detected": result.page_detected,
-        "red_mark_count": result.mark_count,
-    }
+    return _create_page(db, subject, content, ext)
 
 
-def _recorrect_saved_page(
-    question: Question,
-    db: Session,
-    page_points: list[list[float]] | None = None,
-):
-    source_image_path = question.source_image_path
-    if not source_image_path:
-        current_path = _resolve_upload(question.image_path)
-        if not current_path.is_file():
-            raise HTTPException(404, "已保存的照片文件不存在，请重新上传照片")
-        source_path = UPLOAD_DIR / (
-            f"{uuid.uuid4().hex}_original{current_path.suffix.lower() or '.jpg'}"
-        )
-        try:
-            shutil.copy2(current_path, source_path)
-        except OSError as exc:
-            raise HTTPException(500, f"原图备份失败：{str(exc)[:200]}")
-        source_image_path = _stored_name(source_path)
-        question.source_image_path = source_image_path
-        db.flush()
-    else:
-        source_path = _resolve_upload(source_image_path)
-    if not source_path.is_file():
-        raise HTTPException(404, "整张原卷文件已丢失，请重新上传照片")
-
-    stem = f"{source_path.stem}_recorrect_{uuid.uuid4().hex[:10]}"
-    try:
-        result = process_page(source_path, UPLOAD_DIR, stem, page_points)
-    except Exception as exc:
-        raise HTTPException(400, f"重新校正失败：{str(exc)[:200]}")
-    result.corrected_path.unlink(missing_ok=True)
-    return _replace_question_crops(
-        question, db, source_image_path, result.crop_paths, result
-    )
+class SplitRequest(BaseModel):
+    lines: list[int]
 
 
-def _replace_question_crops(
-    question: Question,
-    db: Session,
-    source_image_path: str,
-    crop_paths: list[Path],
-    result=None,
-    confirmed: bool = False,
-):
-    group = (
-        db.query(Question)
-        .filter(
-            (Question.source_image_path == source_image_path)
-            | (Question.id == question.id)
-        )
-        .order_by(Question.id.asc())
-        .all()
-    )
-    new_paths = list(crop_paths)
-    old_paths = [_resolve_upload(item.image_path) for item in group]
-    try:
-        for item, crop_path in zip(group, new_paths):
-            item.image_path = _stored_name(crop_path)
-            item.knowledge_point = ""
-            item.answer_masks = ""
-            item.crop_reviewed = confirmed
-        for crop_path in new_paths[len(group):]:
-            db.add(
-                Question(
-                    subject=question.subject,
-                    image_path=_stored_name(crop_path),
-                    source_image_path=source_image_path,
-                    crop_reviewed=confirmed,
-                )
-            )
-        for item in group[len(new_paths):]:
-            db.delete(item)
-        db.commit()
-    except Exception:
-        db.rollback()
-        for path in new_paths:
-            _delete_file(path)
-        raise HTTPException(500, "重新校正结果保存失败，原记录未更改")
-
-    for path in old_paths:
-        if path not in new_paths:
-            _delete_file(path)
-    refreshed = (
-        db.query(Question)
-        .filter(Question.source_image_path == source_image_path)
-        .order_by(Question.id.asc())
-        .all()
-    )
-    return {
-        "questions": [question_to_dict(item) for item in refreshed],
-        "page_detected": result.page_detected if result else True,
-        "red_mark_count": result.mark_count if result else len(new_paths),
-        "updated_count": min(len(group), len(new_paths)),
-        "created_count": max(0, len(new_paths) - len(group)),
-        "removed_count": max(0, len(group) - len(new_paths)),
-    }
-
-
-class ManualCorrection(BaseModel):
+class ManualStraighten(SplitRequest):
     points: list[list[float]] | None = None
 
 
-class CropConfirmation(BaseModel):
-    preview_filename: str
-    ranges: list[list[int]]
-
-
-@app.post("/api/questions/{question_id}/recorrect")
-def recorrect_saved_page(question_id: int, db: Session = Depends(get_db)):
-    """Automatically re-run correction/cropping for one saved source page."""
-    question = db.get(Question, question_id)
-    if not question:
-        raise HTTPException(404, "错题不存在")
-    return _recorrect_saved_page(question, db)
-
-
-@app.post("/api/questions/{question_id}/recorrect/manual")
-def manually_recorrect_saved_page(
+@app.post("/api/questions/{question_id}/split")
+def split_question(
     question_id: int,
-    payload: ManualCorrection,
+    payload: SplitRequest,
     db: Session = Depends(get_db),
 ):
-    """Correct/crop one saved page using four user-selected paper corners."""
+    """按用户确认的分割线重新切这一页。"""
     question = db.get(Question, question_id)
     if not question:
         raise HTTPException(404, "错题不存在")
-    return _recorrect_saved_page(question, db, payload.points)
-
-
-@app.post("/api/questions/{question_id}/recorrect/preview")
-def preview_manual_recorrection(
-    question_id: int,
-    payload: ManualCorrection,
-    db: Session = Depends(get_db),
-):
-    """Create a corrected-page preview without changing saved question crops."""
-    question = db.get(Question, question_id)
-    if not question:
-        raise HTTPException(404, "错题不存在")
-    if not question.source_image_path:
-        current_path = _resolve_upload(question.image_path)
-        if not current_path.is_file():
-            raise HTTPException(404, "已保存的照片文件不存在")
-        source_path = UPLOAD_DIR / (
-            f"{uuid.uuid4().hex}_original{current_path.suffix.lower() or '.jpg'}"
-        )
-        try:
-            shutil.copy2(current_path, source_path)
-        except OSError as exc:
-            raise HTTPException(500, f"原图备份失败：{str(exc)[:200]}")
-        question.source_image_path = _stored_name(source_path)
-        db.commit()
-    else:
-        source_path = _resolve_upload(question.source_image_path)
-    if not source_path.is_file():
-        raise HTTPException(404, "原卷图片不存在")
-    _delete_previous_previews(UPLOAD_DIR, source_path.stem)
-    stem = f"{source_path.stem}_recorrect_preview_{uuid.uuid4().hex[:10]}"
-    try:
-        result = process_page(source_path, UPLOAD_DIR, stem, payload.points)
-    except Exception as exc:
-        raise HTTPException(400, f"放平预览失败：{str(exc)[:200]}")
-    for crop_path in result.crop_paths:
-        _delete_file(crop_path)
-    image = cv2.imread(str(result.corrected_path))
+    source_name = question.source_image_path
+    if not source_name:
+        raise HTTPException(400, "这道题没有整页原图，无法重新切割")
+    page_path = _resolve_upload(source_name)
+    image = cv2.imread(str(page_path))
     if image is None:
-        _delete_file(result.corrected_path)
-        raise HTTPException(500, "无法读取放平预览")
-    height, width = image.shape[:2]
+        raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
+
+    lines = _validate_lines(payload.lines, image.shape[0])
+    crop_paths = _split_into_crops(image, lines, f"{page_path.stem}_s{uuid.uuid4().hex[:8]}")
+    questions = _apply_split(db, question, source_name, crop_paths)
+    return {"questions": [question_to_dict(q) for q in questions]}
+
+
+@app.post("/api/questions/{question_id}/straighten")
+def straighten_question(
+    question_id: int,
+    payload: ManualStraighten,
+    db: Session = Depends(get_db),
+):
+    """拍照歪了、桌面上有干扰时：手动选四个角重新摆正，并给出新的建议分割线。"""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    if not payload.points:
+        raise HTTPException(400, "请先选择纸张的四个角")
+    source_name = question.source_image_path
+    if not source_name:
+        raise HTTPException(400, "这道题没有整页原图，无法手动摆正")
+    page_path = _resolve_upload(source_name)
+    raw = cv2.imread(str(page_path))
+    if raw is None:
+        raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
+    try:
+        straightened = warp_with_corners(raw, payload.points)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    lines = suggest_split_lines(straightened)
+    _validate_lines(lines, straightened.shape[0])
+    # 先写新图再删旧图：中途失败也不会把这一组的原图弄丢。
+    new_path = _save_page(straightened, f"{page_path.stem}_m{uuid.uuid4().hex[:8]}")
+    new_name = _stored_name(new_path)
+    crop_paths = _split_into_crops(
+        straightened, lines, f"{new_path.stem}_s{uuid.uuid4().hex[:8]}"
+    )
+    try:
+        # 整组一起改指向新整页，否则 source_image_path 会指向已删除的旧文件。
+        questions = _apply_split(db, question, new_name, crop_paths, rename_group_from=source_name)
+    except HTTPException:
+        _delete_file(new_path)
+        raise
+    _delete_file(page_path)
     return {
-        "preview_url": f"/uploads/{result.corrected_path.name}",
-        "preview_filename": result.corrected_path.name,
-        "width": width,
-        "height": height,
-        "page_detected": result.page_detected,
-        "red_mark_count": result.mark_count,
-        "ranges": [],
+        "questions": [question_to_dict(q) for q in questions],
+        "source_image_url": f"/uploads/{new_path.name}",
+        "width": int(straightened.shape[1]),
+        "height": int(straightened.shape[0]),
+        "lines": lines,
     }
 
 
-@app.post("/api/questions/{question_id}/recorrect/confirm")
-def confirm_manual_recrops(
-    question_id: int,
-    payload: CropConfirmation,
-    db: Session = Depends(get_db),
-):
-    """Save user-reviewed vertical crop ranges from a corrected-page preview."""
+@app.post("/api/questions/{question_id}/suggest")
+def suggest_question(question_id: int, db: Session = Depends(get_db)):
+    """对已存的整页重新跑一遍空白带检测，只返回建议分割线，不改数据。"""
     question = db.get(Question, question_id)
     if not question:
         raise HTTPException(404, "错题不存在")
     if not question.source_image_path:
-        raise HTTPException(400, "该记录没有整张原卷")
-    source_path = _resolve_upload(question.source_image_path)
-    filename = Path(payload.preview_filename).name
-    if (
-        filename != payload.preview_filename
-        or not filename.startswith(f"{source_path.stem}_recorrect_preview_")
-        or not filename.endswith("_page.jpg")
-    ):
-        raise HTTPException(400, "预览文件无效")
-    preview_path = UPLOAD_DIR / filename
-    image = cv2.imread(str(preview_path))
+        raise HTTPException(400, "这道题没有整页原图")
+    page_path = _resolve_upload(question.source_image_path)
+    image = cv2.imread(str(page_path))
     if image is None:
-        raise HTTPException(404, "预览已失效，请重新选取四角")
-    height, width = image.shape[:2]
-    ranges = []
-    for item in payload.ranges:
-        if len(item) != 2:
-            raise HTTPException(400, "切割范围格式错误")
-        top, bottom = (int(item[0]), int(item[1]))
-        if top < 0 or bottom > height or bottom - top < 80:
-            raise HTTPException(400, "切割范围无效或过小")
-        ranges.append((top, bottom))
-    if not ranges or len(ranges) > 30:
-        raise HTTPException(400, "请保留 1 到 30 个错题范围")
-    ranges.sort()
-    crops = crop_image_ranges(image, ranges)
-    stem = f"{source_path.stem}_reviewed_{uuid.uuid4().hex[:10]}"
-    crop_paths = []
-    for index, crop in enumerate(crops, 1):
-        path = UPLOAD_DIR / f"{stem}_q{index}.jpg"
-        cv2.imwrite(str(path), crop, [cv2.IMWRITE_JPEG_QUALITY, 94])
-        crop_paths.append(path)
+        raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        response = _replace_question_crops(
-            question, db, question.source_image_path, crop_paths, confirmed=True
-        )
-    finally:
-        _delete_file(preview_path)
-    return response
+        return {"lines": _validate_lines(suggest_split_lines(image), image.shape[0])}
+    except HTTPException:
+        # 建议线不合法（贴边/太密）时宁可不给，也不要给一堆废线。
+        return {"lines": []}
 
 
-@app.delete("/api/recorrect/preview/{filename}", status_code=204)
-def discard_recorrection_preview(filename: str):
-    """Delete an unconfirmed temporary correction preview."""
-    safe_name = Path(filename).name
-    if (
-        safe_name != filename
-        or "_recorrect_preview_" not in safe_name
-        or not safe_name.endswith("_page.jpg")
-    ):
-        raise HTTPException(400, "预览文件无效")
-    _delete_file(UPLOAD_DIR / safe_name)
+@app.get("/api/questions/{question_id}/page")
+def get_page(question_id: int, db: Session = Depends(get_db)):
+    """重新打开切割编辑器时，取这一页的原图和当前分割线。"""
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    if not question.source_image_path:
+        raise HTTPException(400, "这道题没有整页原图")
+    page_path = _resolve_upload(question.source_image_path)
+    image = cv2.imread(str(page_path))
+    if image is None:
+        raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
+    group = _group_of(db, question.source_image_path)
+    height = int(image.shape[0])
+    # 现存切片的高度换算成这一页上的分割线，编辑器打开就是上次的样子。
+    lines = []
+    offset = 0
+    for item in group[:-1]:
+        crop = cv2.imread(str(_resolve_upload(item.image_path)))
+        offset += int(crop.shape[0]) if crop is not None else 0
+        if offset < height:
+            lines.append(offset)
+    return {
+        "source_image_url": f"/uploads/{page_path.name}",
+        "width": int(image.shape[1]),
+        "height": height,
+        "lines": lines,
+        "question_count": len(group),
+    }
 
 
 class QuestionUpdate(BaseModel):

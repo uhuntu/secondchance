@@ -352,12 +352,82 @@ textarea:focus {
     background: #fff;
 }
 
-.manual-correct-content {
+/* 切题编辑器是精细拖拽操作，尽可能占满窗口：
+   画布有固有尺寸，只给 max-height 会被浏览器等比缩小（宽度跟着一起变小）。 */
+.split-content {
+    max-width: 1100px;
+    max-height: 96vh;
+}
+
+#splitCanvas {
+    display: block;
+    max-width: 100%;
+    /* 减掉标题/说明/状态栏/按钮占的高度，剩下的都留给图 */
+    max-height: calc(96vh - 250px);
+    margin: 0 auto;
+    border-radius: 8px;
+    cursor: crosshair;
+    background: #222;
+    touch-action: none;
+}
+
+.split-hint {
+    font-size: 13px;
+    color: #666;
+}
+
+.split-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 14px;
+    color: #555;
+}
+
+.line-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    min-height: 26px;
+}
+
+.line-chip {
+    border: 1px solid #ff9c8f;
+    border-radius: 14px;
+    background: #fff2f0;
+    color: #cf1322;
+    padding: 4px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.line-chip:hover {
+    background: #ffe3df;
+}
+
+.line-chip-empty {
+    font-size: 13px;
+    color: #999;
+}
+
+.split-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 14px;
+    color: #555;
+}
+
+.corner-content {
     max-width: 920px;
     max-height: 96vh;
 }
 
-#manualCorrectCanvas {
+#cornerCanvas {
     display: block;
     max-width: 100%;
     max-height: 72vh;
@@ -368,44 +438,12 @@ textarea:focus {
     touch-action: none;
 }
 
-.crop-review-content {
+.mask-content {
     max-width: 920px;
     max-height: 96vh;
 }
 
-#cropReviewCanvas {
-    display: block;
-    max-width: 100%;
-    max-height: 68vh;
-    margin: 0 auto;
-    border-radius: 8px;
-    cursor: ns-resize;
-    background: #222;
-    touch-action: none;
-}
-
-.crop-range-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
-    min-height: 28px;
-}
-
-.crop-range-chip {
-    border: 1px solid #ff9c8f;
-    border-radius: 14px;
-    background: #fff2f0;
-    color: #cf1322;
-    padding: 4px 10px;
-    cursor: pointer;
-}
-
-.answer-mask-content {
-    max-width: 920px;
-    max-height: 96vh;
-}
-
-#answerMaskCanvas {
+#maskCanvas {
     display: block;
     max-width: 100%;
     max-height: 70vh;
@@ -414,6 +452,50 @@ textarea:focus {
     cursor: crosshair;
     background: #222;
     touch-action: none;
+}
+
+.mask-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    min-height: 28px;
+}
+
+.mask-chip {
+    border: 1px solid #ff9c8f;
+    border-radius: 14px;
+    background: #fff2f0;
+    color: #cf1322;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+
+/* 卡片内直接改知识点：省掉一次弹窗 */
+.kp-inline {
+    width: 100%;
+    border: 1px dashed transparent;
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 13px;
+    font-family: inherit;
+    color: #1f2329;
+    background: transparent;
+}
+
+.kp-inline:hover {
+    border-color: #d9d9d9;
+    background: #fafafa;
+}
+
+.kp-inline:focus {
+    outline: none;
+    border-style: solid;
+    border-color: #4a6cf7;
+    background: #fff;
+}
+
+.kp-inline.saving {
+    opacity: 0.55;
 }
 
 @media (max-width: 600px) {

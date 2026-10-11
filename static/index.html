@@ -4,18 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>数学错题本</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=20261010-2">
 </head>
 <body>
     <header>
         <h1>数学错题本</h1>
-        <p class="subtitle">拍照上传 · 分类管理 · 随时回顾</p>
+        <p class="subtitle">拍下作业页 · 自动挑出错题 · 遮住答案重练</p>
     </header>
 
     <main>
-        <!-- 上传区 -->
         <section class="upload-card">
-            <h2>拍错题</h2>
             <div class="photo-picker">
                 <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
                 <button type="button" id="pickPhotoBtn" class="btn btn-primary btn-large">
@@ -26,17 +24,16 @@
                 </div>
             </div>
             <button type="button" id="submitBtn" class="btn btn-primary btn-large">保存错题</button>
-            <button type="button" class="btn btn-large" onclick="window.open('/static/paper.html', '_blank')">📝 用错题生成练习卷</button>
-            <p class="hint">可拍整页作业；系统会自动校正页面，并按红色批改标记切分错题</p>
+            <button type="button" class="btn btn-large" onclick="window.open('/static/paper.html', '_blank')">📝 生成练习卷</button>
+            <p class="hint">拍整页作业就行。系统会自动挑出错题，切得不理想再拖分割线微调。</p>
             <div id="uploadMsg" class="msg" hidden></div>
         </section>
 
-        <!-- 列表区 -->
         <section id="questionList" class="card-grid"></section>
         <p id="emptyHint" class="empty-hint" hidden>还没有错题，先拍一道吧！</p>
     </main>
 
-    <!-- 编辑弹窗 -->
+    <!-- 备注编辑弹窗 -->
     <div id="editModal" class="modal" hidden>
         <div class="modal-content">
             <h3>编辑错题</h3>
@@ -50,46 +47,50 @@
         </div>
     </div>
 
-    <!-- 手动四点校正 -->
-    <div id="manualCorrectModal" class="modal" hidden>
-        <div class="modal-content manual-correct-content">
-            <h3>手动放平原卷</h3>
-            <p id="manualCorrectHint" class="hint">依次点击：左上角、右上角、右下角、左下角</p>
-            <canvas id="manualCorrectCanvas"></canvas>
+    <!-- 分割线编辑器：划线代替画框 -->
+    <div id="splitModal" class="modal" hidden>
+        <div class="modal-content split-content">
+            <h3>调整切题</h3>
+            <p class="split-hint">两条线之间就是一道错题。<b>拖动</b>红色圆点移动分割线，<b>点空白处</b>加一条线；删线请点下方的标签。</p>
+            <canvas id="splitCanvas"></canvas>
+            <div class="split-status">
+                <span id="splitCount"></span>
+                <button type="button" id="splitStraightenBtn" class="btn btn-small">照片歪了？手动摆正</button>
+            </div>
+            <div id="splitLineChips" class="line-chips"></div>
             <div class="modal-actions">
-                <button type="button" id="manualCorrectResetBtn" class="btn">重新选点</button>
-                <button type="button" id="manualCorrectApplyBtn" class="btn btn-primary" disabled>确认放平</button>
-                <button type="button" id="manualCorrectCancelBtn" class="btn">取消</button>
+                <button type="button" id="splitResetBtn" class="btn">重新自动切</button>
+                <button type="button" id="splitCancelBtn" class="btn">取消</button>
+                <button type="button" id="splitSaveBtn" class="btn btn-primary">保存</button>
             </div>
         </div>
     </div>
 
-    <!-- 错题切割确认 -->
-    <div id="cropReviewModal" class="modal" hidden>
-        <div class="modal-content crop-review-content">
-            <h3>确认错题切割</h3>
-            <p id="cropReviewHint" class="hint">彩色框是候选错题。拖动框出新范围；点击下方标签可删除错误范围。</p>
-            <canvas id="cropReviewCanvas"></canvas>
-            <div id="cropRangeList" class="crop-range-list"></div>
+    <!-- 手动四点摆正 -->
+    <div id="cornerModal" class="modal" hidden>
+        <div class="modal-content corner-content">
+            <h3>手动摆正</h3>
+            <p id="cornerHint" class="hint">依次点击：左上角、右上角、右下角、左下角</p>
+            <canvas id="cornerCanvas"></canvas>
             <div class="modal-actions">
-                <button type="button" id="cropClearBtn" class="btn">清空范围</button>
-                <button type="button" id="cropConfirmBtn" class="btn btn-primary">确认保存</button>
-                <button type="button" id="cropCancelBtn" class="btn">取消</button>
+                <button type="button" id="cornerResetBtn" class="btn">重新选点</button>
+                <button type="button" id="cornerApplyBtn" class="btn btn-primary" disabled>确认摆正</button>
+                <button type="button" id="cornerCancelBtn" class="btn">取消</button>
             </div>
         </div>
     </div>
 
-    <!-- 练习卷答案遮挡 -->
-    <div id="answerMaskModal" class="modal" hidden>
-        <div class="modal-content answer-mask-content">
-            <h3>遮挡原答案</h3>
-            <p class="hint">在图片上拖框遮住孩子答案或批改痕迹。点击下方标签可删除遮挡；原图不会改变。</p>
-            <canvas id="answerMaskCanvas"></canvas>
-            <div id="answerMaskList" class="crop-range-list"></div>
+    <!-- 答案遮挡 -->
+    <div id="maskModal" class="modal" hidden>
+        <div class="modal-content mask-content">
+            <h3>遮住答案</h3>
+            <p class="hint">在图上拖框遮住孩子的答案或老师的批改痕迹。原图不会改变。</p>
+            <canvas id="maskCanvas"></canvas>
+            <div id="maskList" class="mask-list"></div>
             <div class="modal-actions">
-                <button type="button" id="answerMaskClearBtn" class="btn">清空遮挡</button>
-                <button type="button" id="answerMaskSaveBtn" class="btn btn-primary">保存遮挡</button>
-                <button type="button" id="answerMaskCancelBtn" class="btn">取消</button>
+                <button type="button" id="maskClearBtn" class="btn">清空遮挡</button>
+                <button type="button" id="maskSaveBtn" class="btn btn-primary">保存遮挡</button>
+                <button type="button" id="maskCancelBtn" class="btn">取消</button>
             </div>
         </div>
     </div>
@@ -102,6 +103,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260909-8"></script>
+    <script src="/static/app.js?v=20261010-2"></script>
 </body>
 </html>

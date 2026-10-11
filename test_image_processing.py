@@ -1,4 +1,4 @@
-from io import BytesIO
+import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -6,79 +6,96 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from image_processing import heic_to_jpeg_bytes, process_page
+from image_processing import (
+    analyze,
+    crop_by_lines,
+    heic_to_jpeg_bytes,
+    straighten,
+    suggest_split_lines,
+    warp_with_corners,
+)
 
 
-def test_red_marks_create_question_bands():
-    page = np.full((1200, 800, 3), 255, dtype=np.uint8)
-    cv2.rectangle(page, (45, 35), (755, 1165), (20, 20, 20), 4)
-    for y in (250, 650, 980):
-        cv2.line(page, (600, y - 25), (650, y + 25), (0, 0, 220), 10)
-        cv2.line(page, (650, y - 25), (600, y + 25), (0, 0, 220), 10)
-    # Two wrong marks on the same answer line are one candidate question.
-    cv2.line(page, (300, 625), (350, 675), (0, 0, 220), 10)
-    cv2.line(page, (350, 625), (300, 675), (0, 0, 220), 10)
-    # A small teacher tick is a correct-answer mark and must not create a crop.
-    cv2.line(page, (180, 450), (188, 458), (0, 0, 220), 3)
-    cv2.line(page, (188, 458), (205, 438), (0, 0, 220), 3)
+def _page_with_gaps(height: int = 1200, width: int = 800) -> np.ndarray:
+    """一张白纸，内容分成三段，中间留两段明显的空白带。"""
+    page = np.full((height, width, 3), 255, dtype=np.uint8)
+    blocks = [(80, 300), (420, 640), (760, 1000)]
+    for top, bottom in blocks:
+        for y in range(top, bottom, 22):
+            cv2.line(page, (80, y), (width - 80, y), (40, 40, 40), 3)
+    return page
+
+
+def _write(directory: Path, name: str, image: np.ndarray) -> Path:
+    path = directory / name
+    cv2.imwrite(str(path), image)
+    return path
+
+
+def test_split_lines_land_in_the_blank_gaps():
     with TemporaryDirectory() as directory:
-        source = Path(directory) / "page.jpg"
-        cv2.imwrite(str(source), page)
-        result = process_page(source, Path(directory), "test")
-        assert result.page_detected
-        assert result.mark_count == 3
-        assert len(result.crop_paths) == 3
-        assert all(path.is_file() for path in result.crop_paths)
+        directory = Path(directory)
+        source = _write(directory, "page.jpg", _page_with_gaps())
+        lines = suggest_split_lines(source)
+        height = _page_with_gaps().shape[0]
+        # 两段空白带分别在 300~420 和 640~760，线应落在其中
+        assert len(lines) == 2, lines
+        assert 300 <= lines[0] <= 420
+        assert 640 <= lines[1] <= 760
+        assert all(0 < line < height for line in lines)
 
 
-def test_manual_corners_warp_page_before_cropping():
-    photo = np.full((900, 900, 3), 70, dtype=np.uint8)
-    page = np.full((700, 500, 3), 255, dtype=np.uint8)
-    cv2.line(page, (390, 300), (440, 350), (0, 0, 220), 10)
-    cv2.line(page, (440, 300), (390, 350), (0, 0, 220), 10)
-    source_corners = np.float32([[160, 80], [720, 150], [780, 820], [90, 760]])
-    target_corners = np.float32([[0, 0], [499, 0], [499, 699], [0, 699]])
-    matrix = cv2.getPerspectiveTransform(target_corners, source_corners)
-    warped = cv2.warpPerspective(page, matrix, (900, 900))
-    mask = cv2.warpPerspective(
-        np.full((700, 500), 255, dtype=np.uint8), matrix, (900, 900)
-    )
-    photo[mask > 0] = warped[mask > 0]
+def test_crop_by_lines_splits_into_bands():
+    image = np.zeros((900, 400, 3), dtype=np.uint8)
+    crops = crop_by_lines(image, [300, 600])
+    assert [crop.shape[0] for crop in crops] == [300, 300, 300]
+    # 没有分割线时整张图就是一道题
+    assert len(crop_by_lines(image, [])) == 1
+
+
+def test_analyze_returns_page_and_suggested_lines():
     with TemporaryDirectory() as directory:
-        source = Path(directory) / "manual.jpg"
-        cv2.imwrite(str(source), photo)
-        result = process_page(
-            source, Path(directory), "manual", source_corners.tolist()
-        )
-        corrected = cv2.imread(str(result.corrected_path))
-        assert result.page_detected
-        assert result.mark_count == 1
-        assert 450 <= corrected.shape[1] <= 700
-        assert 650 <= corrected.shape[0] <= 800
+        directory = Path(directory)
+        source = _write(directory, "page.jpg", _page_with_gaps())
+        result = analyze(source)
+        assert result.image.shape[0] > 0
+        assert result.width > 0 and result.height == result.image.shape[0]
+        assert len(result.lines) == 2
 
 
-def test_photo_frame_is_not_mistaken_for_paper():
-    photo = np.full((900, 700, 3), 245, dtype=np.uint8)
-    cv2.rectangle(photo, (1, 1), (698, 898), (20, 20, 20), 3)
-    with TemporaryDirectory() as directory:
-        source = Path(directory) / "frame.jpg"
-        cv2.imwrite(str(source), photo)
-        result = process_page(source, Path(directory), "frame")
-        assert not result.page_detected
+def test_straighten_falls_back_to_original_when_paper_is_ambiguous():
+    """整幅都是亮色、找不到可靠纸张时，用原图而不是报错。"""
+    flat = np.full((700, 900, 3), 245, dtype=np.uint8)
+    cv2.rectangle(flat, (1, 1), (698, 898), (20, 20, 20), 3)
+    result, detected = straighten(flat)
+    assert detected is False
+    assert result.shape == flat.shape
+
+
+def test_warp_with_corners_rejects_points_outside_the_photo():
+    image = np.full((900, 900, 3), 255, dtype=np.uint8)
+    for bad in ([], [[0, 0], [1, 1]], [[0, 0], [10, 0], [10, 10], [2000, 10]]):
+        try:
+            warp_with_corners(image, bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"应当拒绝这组角点: {bad}")
 
 
 def test_heic_bytes_are_transcoded_to_jpeg():
-    buffer = BytesIO()
+    buffer = io.BytesIO()
     Image.new("RGB", (64, 48), (200, 30, 30)).save(buffer, format="HEIF")
     jpeg = heic_to_jpeg_bytes(buffer.getvalue())
-    with Image.open(BytesIO(jpeg)) as image:
+    with Image.open(io.BytesIO(jpeg)) as image:
         assert image.format == "JPEG"
         assert image.size == (64, 48)
 
 
 if __name__ == "__main__":
-    test_red_marks_create_question_bands()
-    test_manual_corners_warp_page_before_cropping()
-    test_photo_frame_is_not_mistaken_for_paper()
+    test_split_lines_land_in_the_blank_gaps()
+    test_crop_by_lines_splits_into_bands()
+    test_analyze_returns_page_and_suggested_lines()
+    test_straighten_falls_back_to_original_when_paper_is_ambiguous()
+    test_warp_with_corners_rejects_points_outside_the_photo()
     test_heic_bytes_are_transcoded_to_jpeg()
     print("image processing tests passed")

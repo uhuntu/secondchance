@@ -37,3 +37,6 @@ _server_err.log
 transcript.md
 cubes_figure.svg
 cubes_figure_preview.png
+
+# AI tool working memory (agent notes, not app code)
+.workbuddy/

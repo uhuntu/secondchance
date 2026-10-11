@@ -33,15 +33,16 @@ const questionList = document.getElementById("questionList");
 const emptyHint = document.getElementById("emptyHint");
 
 let editingId = null;
+let questionsCache = [];
 
 function showMsg(text, ok) {
     uploadMsg.textContent = text;
     uploadMsg.className = "msg " + (ok ? "ok" : "err");
     uploadMsg.hidden = false;
-    setTimeout(() => (uploadMsg.hidden = true), 4000);
+    clearTimeout(showMsg.timer);
+    showMsg.timer = setTimeout(() => (uploadMsg.hidden = true), 4000);
 }
 
-// 知识点候选列表，供编辑时输入联想（含错误原因）
 function initKpList() {
     kpList.innerHTML = "";
     [...ERROR_REASONS, ...MATH_KNOWLEDGE_POINTS].forEach((kp) => {
@@ -51,520 +52,140 @@ function initKpList() {
     });
 }
 
-function formatTime(iso) {
-    const d = new Date(iso);
-    return d.toLocaleString("zh-CN", { hour12: false });
+// ---------- 列表 ----------
+
+function renderList(list) {
+    if (list) questionsCache = list;
+    questionList.innerHTML = "";
+    emptyHint.hidden = questionsCache.length > 0;
+
+    const groups = new Map();
+    questionsCache.forEach((q) => {
+        const key = q.source_image_url || `single-${q.id}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(q);
+    });
+
+    groups.forEach((items) => {
+        const representative = items[0];
+        const group = document.createElement("section");
+        group.className = "worksheet-group";
+
+        const header = document.createElement("div");
+        header.className = "worksheet-header";
+        const heading = document.createElement("div");
+        const title = document.createElement("h3");
+        title.textContent = representative.source_image_url
+            ? `${items.length} 道错题`
+            : "单题照片";
+        const dates = items.map((item) => new Date(item.created_at));
+        const meta = document.createElement("span");
+        meta.textContent = new Date(Math.min(...dates)).toLocaleString("zh-CN", { hour12: false });
+        heading.append(title, meta);
+
+        const actions = document.createElement("div");
+        actions.className = "worksheet-actions";
+        if (representative.source_image_url) {
+            actions.append(
+                smallButton("看整页", () => openLightbox(representative.source_image_url)),
+                smallButton("调整切题", () => openSplit(representative))
+            );
+        }
+        header.append(heading, actions);
+        group.appendChild(header);
+
+        const grid = document.createElement("div");
+        grid.className = "worksheet-question-grid";
+        items.forEach((q, index) => grid.appendChild(buildCard(q, index + 1)));
+        group.appendChild(grid);
+        questionList.appendChild(group);
+    });
 }
 
-function renderList() {
-    fetch("/api/questions")
-        .then((r) => r.json())
-        .then((list) => {
-            questionList.innerHTML = "";
-            emptyHint.hidden = list.length > 0;
-            const groups = new Map();
-            list.forEach((q) => {
-                const key = q.source_image_url || `single-${q.id}`;
-                if (!groups.has(key)) groups.set(key, []);
-                groups.get(key).push(q);
-            });
-            groups.forEach((items) => {
-                const representative = items[0];
-                const group = document.createElement("section");
-                group.className = "worksheet-group";
-                const header = document.createElement("div");
-                header.className = "worksheet-header";
-                const heading = document.createElement("div");
-                const title = document.createElement("h3");
-                title.textContent = representative.source_image_url
-                    ? `一张原卷 · ${items.length} 道错题`
-                    : "单题照片";
-                const dates = items.map((item) => new Date(item.created_at));
-                const date = new Date(Math.min(...dates));
-                const meta = document.createElement("span");
-                meta.textContent = date.toLocaleString("zh-CN", { hour12: false });
-                heading.appendChild(title);
-                heading.appendChild(meta);
+function smallButton(text, onclick) {
+    const btn = document.createElement("button");
+    btn.className = "btn btn-small";
+    btn.textContent = text;
+    btn.onclick = onclick;
+    return btn;
+}
 
-                const groupActions = document.createElement("div");
-                groupActions.className = "worksheet-actions";
-                if (representative.source_image_url) {
-                    const sourceBtn = document.createElement("button");
-                    sourceBtn.className = "btn btn-small";
-                    sourceBtn.textContent = "查看原卷";
-                    sourceBtn.onclick = () => openLightbox(representative.source_image_url);
-                    groupActions.appendChild(sourceBtn);
-                }
-                const recorrectBtn = document.createElement("button");
-                recorrectBtn.className = "btn btn-small";
-                recorrectBtn.textContent = "校正并切割";
-                recorrectBtn.onclick = () => recorrectPage(representative, recorrectBtn);
-                groupActions.appendChild(recorrectBtn);
-                header.appendChild(heading);
-                header.appendChild(groupActions);
-                group.appendChild(header);
+function buildCard(q, index) {
+    const card = document.createElement("div");
+    card.className = "q-card";
 
-                const grid = document.createElement("div");
-                grid.className = "worksheet-question-grid";
-                items.forEach((q, itemIndex) => {
-                const card = document.createElement("div");
-                card.className = "q-card";
+    const img = document.createElement("img");
+    img.src = q.image_url;
+    img.alt = `错题 ${index}`;
+    img.onclick = () => openLightbox(q.image_url);
 
-                const img = document.createElement("img");
-                img.src = q.image_url;
-                img.alt = `错题 ${itemIndex + 1}`;
-                img.onclick = () => openLightbox(q.image_url);
+    const body = document.createElement("div");
+    body.className = "q-card-body";
 
-                const body = document.createElement("div");
-                body.className = "q-card-body";
-                if (q.knowledge_point) {
-                    const tags = document.createElement("div");
-                    tags.className = "q-tags";
-                    const tagKp = document.createElement("span");
-                    tagKp.className = "tag tag-kp";
-                    tagKp.textContent = q.knowledge_point;
-                    tags.appendChild(tagKp);
-                    body.appendChild(tags);
-                }
-                if (q.note) {
-                    const noteEl = document.createElement("div");
-                    noteEl.className = "q-note";
-                    noteEl.textContent = q.note;
-                    body.appendChild(noteEl);
-                }
-                const actions = document.createElement("div");
-                actions.className = "q-actions";
-                if (q.crop_reviewed) {
-                    const maskBtn = document.createElement("button");
-                    maskBtn.className = "btn btn-small";
-                    let savedMasks = [];
-                    try {
-                        savedMasks = JSON.parse(q.answer_masks || "[]");
-                    } catch (e) {
-                        savedMasks = [];
-                    }
-                    maskBtn.textContent = savedMasks.length ? `遮挡答案（${savedMasks.length}）` : "遮挡答案";
-                    maskBtn.onclick = () => openAnswerMask(q);
-                    actions.appendChild(maskBtn);
-                }
-                const editBtn = document.createElement("button");
-                editBtn.className = "btn btn-small";
-                editBtn.textContent = "编辑";
-                editBtn.onclick = () => openEdit(q);
-                const delBtn = document.createElement("button");
-                delBtn.className = "btn btn-small";
-                delBtn.textContent = "删除";
-                delBtn.onclick = () => deleteQuestion(q.id);
-                actions.appendChild(editBtn);
-                actions.appendChild(delBtn);
+    // 知识点直接显示在卡片上，点一下就能改：这是每天都会用到的动作，不该藏在弹窗里。
+    const kp = document.createElement("input");
+    kp.type = "text";
+    kp.className = "kp-inline";
+    kp.list = "kpList";
+    kp.placeholder = "＋ 知识点 / 错因";
+    kp.value = q.knowledge_point || "";
+    kp.onclick = (e) => e.stopPropagation();
+    kp.onchange = () => saveField(q, "knowledge_point", kp.value.trim(), kp);
+    body.appendChild(kp);
 
-                card.appendChild(img);
-                card.appendChild(body);
-                card.appendChild(actions);
-                grid.appendChild(card);
-                });
-                group.appendChild(grid);
-                questionList.appendChild(group);
-            });
+    if (q.note) {
+        const noteEl = document.createElement("div");
+        noteEl.className = "q-note";
+        noteEl.textContent = q.note;
+        body.appendChild(noteEl);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "q-actions";
+    let savedMasks = [];
+    try {
+        savedMasks = JSON.parse(q.answer_masks || "[]");
+    } catch (e) {
+        savedMasks = [];
+    }
+    actions.append(
+        smallButton(savedMasks.length ? `遮答案 ${savedMasks.length}` : "遮答案", () => openMask(q)),
+        smallButton("备注", () => openEdit(q)),
+        smallButton("删除", () => deleteQuestion(q.id))
+    );
+
+    card.append(img, body, actions);
+    return card;
+}
+
+function saveField(q, field, value, inputEl) {
+    const previous = q[field] || "";
+    if (value === previous) return;
+    inputEl.classList.add("saving");
+    fetch(`/api/questions/${q.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: value }),
+    })
+        .then((r) => {
+            inputEl.classList.remove("saving");
+            if (!r.ok) {
+                inputEl.value = previous;
+                showMsg("保存失败", false);
+                return;
+            }
+            q[field] = value;
+        })
+        .catch(() => {
+            inputEl.classList.remove("saving");
+            inputEl.value = previous;
+            showMsg("保存失败", false);
         });
 }
 
 function openLightbox(imageUrl) {
     document.getElementById("lightboxImg").src = imageUrl;
     document.getElementById("lightbox").hidden = false;
-}
-
-const manualCorrectModal = document.getElementById("manualCorrectModal");
-const manualCorrectCanvas = document.getElementById("manualCorrectCanvas");
-const manualCorrectHint = document.getElementById("manualCorrectHint");
-const manualCorrectApplyBtn = document.getElementById("manualCorrectApplyBtn");
-const manualCorrectContext = manualCorrectCanvas.getContext("2d");
-const cornerNames = ["左上角", "右上角", "右下角", "左下角"];
-let manualCorrectQuestion = null;
-let manualCorrectImage = null;
-let manualCorrectPoints = [];
-
-function redrawManualCorrect() {
-    if (!manualCorrectImage) return;
-    manualCorrectContext.clearRect(0, 0, manualCorrectCanvas.width, manualCorrectCanvas.height);
-    manualCorrectContext.drawImage(
-        manualCorrectImage, 0, 0, manualCorrectCanvas.width, manualCorrectCanvas.height
-    );
-    if (manualCorrectPoints.length) {
-        manualCorrectContext.strokeStyle = "#f44336";
-        manualCorrectContext.fillStyle = "#f44336";
-        manualCorrectContext.lineWidth = Math.max(3, manualCorrectCanvas.width / 300);
-        manualCorrectContext.beginPath();
-        manualCorrectPoints.forEach((point, index) => {
-            if (index === 0) manualCorrectContext.moveTo(point[0], point[1]);
-            else manualCorrectContext.lineTo(point[0], point[1]);
-        });
-        if (manualCorrectPoints.length === 4) manualCorrectContext.closePath();
-        manualCorrectContext.stroke();
-        manualCorrectPoints.forEach((point, index) => {
-            manualCorrectContext.beginPath();
-            manualCorrectContext.arc(
-                point[0], point[1], Math.max(8, manualCorrectCanvas.width / 90), 0, Math.PI * 2
-            );
-            manualCorrectContext.fill();
-            manualCorrectContext.fillStyle = "#fff";
-            manualCorrectContext.font = `bold ${Math.max(14, manualCorrectCanvas.width / 45)}px sans-serif`;
-            manualCorrectContext.textAlign = "center";
-            manualCorrectContext.textBaseline = "middle";
-            manualCorrectContext.fillText(String(index + 1), point[0], point[1]);
-            manualCorrectContext.fillStyle = "#f44336";
-        });
-    }
-    manualCorrectApplyBtn.disabled = manualCorrectPoints.length !== 4;
-    manualCorrectHint.textContent = manualCorrectPoints.length < 4
-        ? `请点击${cornerNames[manualCorrectPoints.length]}（第 ${manualCorrectPoints.length + 1} 个点）`
-        : "四个角已选好；红线内的区域将被拉成矩形";
-}
-
-function openManualCorrect(q) {
-    manualCorrectQuestion = q;
-    manualCorrectPoints = [];
-    manualCorrectImage = new Image();
-    manualCorrectImage.onload = () => {
-        manualCorrectCanvas.width = manualCorrectImage.naturalWidth;
-        manualCorrectCanvas.height = manualCorrectImage.naturalHeight;
-        redrawManualCorrect();
-    };
-    manualCorrectImage.onerror = () => {
-        showMsg("无法载入原卷图片", false);
-        manualCorrectModal.hidden = true;
-    };
-    manualCorrectImage.src = q.source_image_url || q.image_url;
-    manualCorrectHint.textContent = "正在载入原卷…";
-    manualCorrectModal.hidden = false;
-}
-
-manualCorrectCanvas.onclick = (event) => {
-    if (!manualCorrectImage || manualCorrectPoints.length >= 4) return;
-    const rect = manualCorrectCanvas.getBoundingClientRect();
-    manualCorrectPoints.push([
-        (event.clientX - rect.left) * manualCorrectCanvas.width / rect.width,
-        (event.clientY - rect.top) * manualCorrectCanvas.height / rect.height,
-    ]);
-    redrawManualCorrect();
-};
-
-document.getElementById("manualCorrectResetBtn").onclick = () => {
-    manualCorrectPoints = [];
-    redrawManualCorrect();
-};
-document.getElementById("manualCorrectCancelBtn").onclick = () => {
-    manualCorrectModal.hidden = true;
-};
-manualCorrectApplyBtn.onclick = async () => {
-    if (!manualCorrectQuestion || manualCorrectPoints.length !== 4) return;
-    manualCorrectApplyBtn.disabled = true;
-    manualCorrectApplyBtn.textContent = "生成预览中…";
-    try {
-        const response = await fetch(
-            `/api/questions/${manualCorrectQuestion.id}/recorrect/preview`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ points: manualCorrectPoints }),
-            }
-        );
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.detail || "手动校正失败");
-        manualCorrectModal.hidden = true;
-        openCropReview(result, manualCorrectQuestion);
-    } catch (error) {
-        showMsg(error.message, false);
-    } finally {
-        manualCorrectApplyBtn.textContent = "确认放平";
-        manualCorrectApplyBtn.disabled = manualCorrectPoints.length !== 4;
-    }
-};
-
-const cropReviewModal = document.getElementById("cropReviewModal");
-const cropReviewCanvas = document.getElementById("cropReviewCanvas");
-const cropReviewContext = cropReviewCanvas.getContext("2d");
-const cropRangeList = document.getElementById("cropRangeList");
-const cropReviewHint = document.getElementById("cropReviewHint");
-const cropConfirmBtn = document.getElementById("cropConfirmBtn");
-let cropReviewQuestion = null;
-let cropReviewImage = null;
-let cropReviewFilename = "";
-let cropRanges = [];
-let cropDragStart = null;
-
-function drawCropReview() {
-    if (!cropReviewImage) return;
-    cropReviewContext.clearRect(0, 0, cropReviewCanvas.width, cropReviewCanvas.height);
-    cropReviewContext.drawImage(
-        cropReviewImage, 0, 0, cropReviewCanvas.width, cropReviewCanvas.height
-    );
-    cropRanges.forEach((range, index) => {
-        const hue = (index * 67) % 360;
-        cropReviewContext.fillStyle = `hsla(${hue}, 90%, 55%, 0.09)`;
-        cropReviewContext.strokeStyle = `hsl(${hue}, 85%, 45%)`;
-        cropReviewContext.lineWidth = Math.max(3, cropReviewCanvas.width / 350);
-        cropReviewContext.fillRect(0, range[0], cropReviewCanvas.width, range[1] - range[0]);
-        cropReviewContext.strokeRect(1, range[0], cropReviewCanvas.width - 2, range[1] - range[0]);
-    });
-    cropRangeList.innerHTML = "";
-    cropRanges.forEach((range, index) => {
-        const chip = document.createElement("button");
-        chip.className = "crop-range-chip";
-        chip.textContent = `错题 ${index + 1} ×`;
-        chip.title = "删除这个候选范围";
-        chip.onclick = () => {
-            cropRanges.splice(index, 1);
-            drawCropReview();
-        };
-        cropRangeList.appendChild(chip);
-    });
-    cropConfirmBtn.disabled = cropRanges.length === 0;
-}
-
-function cropCanvasY(event) {
-    const rect = cropReviewCanvas.getBoundingClientRect();
-    return Math.max(
-        0,
-        Math.min(
-            cropReviewCanvas.height,
-            (event.clientY - rect.top) * cropReviewCanvas.height / rect.height
-        )
-    );
-}
-
-function openCropReview(result, question) {
-    cropReviewQuestion = question;
-    cropReviewFilename = result.preview_filename;
-    cropRanges = (result.ranges || []).map((range) => [range[0], range[1]]);
-    cropReviewHint.textContent = "请在图片上从每道错题的上边缘拖动到下边缘，为每道题画一个范围，画完后点“确认保存”。";
-    cropReviewImage = new Image();
-    cropReviewImage.onload = () => {
-        cropReviewCanvas.width = cropReviewImage.naturalWidth;
-        cropReviewCanvas.height = cropReviewImage.naturalHeight;
-        drawCropReview();
-    };
-    cropReviewImage.onerror = () => showMsg("无法载入放平预览", false);
-    cropReviewImage.src = result.preview_url;
-    cropReviewModal.hidden = false;
-}
-
-cropReviewCanvas.onpointerdown = (event) => {
-    cropDragStart = cropCanvasY(event);
-    cropReviewCanvas.setPointerCapture(event.pointerId);
-};
-cropReviewCanvas.onpointerup = (event) => {
-    if (cropDragStart === null) return;
-    const end = cropCanvasY(event);
-    const top = Math.round(Math.min(cropDragStart, end));
-    const bottom = Math.round(Math.max(cropDragStart, end));
-    cropDragStart = null;
-    if (bottom - top < 80) {
-        showMsg("框选范围太小，请从题目上方向下拖到题目底部", false);
-        return;
-    }
-    cropRanges.push([top, bottom]);
-    cropRanges.sort((a, b) => a[0] - b[0]);
-    drawCropReview();
-};
-
-document.getElementById("cropClearBtn").onclick = () => {
-    cropRanges = [];
-    drawCropReview();
-};
-
-function closeCropReview() {
-    cropReviewModal.hidden = true;
-    if (cropReviewFilename) {
-        fetch(`/api/recorrect/preview/${encodeURIComponent(cropReviewFilename)}`, {
-            method: "DELETE",
-        });
-    }
-    cropReviewFilename = "";
-}
-
-document.getElementById("cropCancelBtn").onclick = closeCropReview;
-cropConfirmBtn.onclick = async () => {
-    if (!cropReviewQuestion || !cropRanges.length) return;
-    cropConfirmBtn.disabled = true;
-    cropConfirmBtn.textContent = "保存中…";
-    try {
-        const response = await fetch(
-            `/api/questions/${cropReviewQuestion.id}/recorrect/confirm`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    preview_filename: cropReviewFilename,
-                    ranges: cropRanges,
-                }),
-            }
-        );
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.detail || "保存切割结果失败");
-        cropReviewFilename = "";
-        cropReviewModal.hidden = true;
-        renderList();
-        showMsg(`已按确认范围保存 ${result.questions.length} 道错题`, true);
-    } catch (error) {
-        showMsg(error.message, false);
-    } finally {
-        cropConfirmBtn.textContent = "确认保存";
-        cropConfirmBtn.disabled = cropRanges.length === 0;
-    }
-};
-
-const answerMaskModal = document.getElementById("answerMaskModal");
-const answerMaskCanvas = document.getElementById("answerMaskCanvas");
-const answerMaskContext = answerMaskCanvas.getContext("2d");
-const answerMaskList = document.getElementById("answerMaskList");
-const answerMaskSaveBtn = document.getElementById("answerMaskSaveBtn");
-let answerMaskQuestion = null;
-let answerMaskImage = null;
-let answerMasks = [];
-let answerMaskStart = null;
-
-function maskCanvasPoint(event) {
-    const rect = answerMaskCanvas.getBoundingClientRect();
-    return [
-        Math.max(0, Math.min(answerMaskCanvas.width, (event.clientX - rect.left) * answerMaskCanvas.width / rect.width)),
-        Math.max(0, Math.min(answerMaskCanvas.height, (event.clientY - rect.top) * answerMaskCanvas.height / rect.height)),
-    ];
-}
-
-function drawAnswerMasks() {
-    if (!answerMaskImage) return;
-    answerMaskContext.clearRect(0, 0, answerMaskCanvas.width, answerMaskCanvas.height);
-    answerMaskContext.drawImage(answerMaskImage, 0, 0);
-    answerMasks.forEach((mask, index) => {
-        const x = mask[0] * answerMaskCanvas.width / 1000;
-        const y = mask[1] * answerMaskCanvas.height / 1000;
-        const width = mask[2] * answerMaskCanvas.width / 1000;
-        const height = mask[3] * answerMaskCanvas.height / 1000;
-        answerMaskContext.fillStyle = "rgba(255,255,255,0.82)";
-        answerMaskContext.strokeStyle = "#f56c6c";
-        answerMaskContext.lineWidth = Math.max(2, answerMaskCanvas.width / 400);
-        answerMaskContext.fillRect(x, y, width, height);
-        answerMaskContext.strokeRect(x, y, width, height);
-    });
-    answerMaskList.innerHTML = "";
-    answerMasks.forEach((mask, index) => {
-        const chip = document.createElement("button");
-        chip.className = "crop-range-chip";
-        chip.textContent = `遮挡 ${index + 1} ×`;
-        chip.onclick = () => {
-            answerMasks.splice(index, 1);
-            drawAnswerMasks();
-        };
-        answerMaskList.appendChild(chip);
-    });
-}
-
-function openAnswerMask(q) {
-    answerMaskQuestion = q;
-    try {
-        answerMasks = JSON.parse(q.answer_masks || "[]");
-    } catch (e) {
-        answerMasks = [];
-    }
-    answerMaskImage = new Image();
-    answerMaskImage.onload = () => {
-        answerMaskCanvas.width = answerMaskImage.naturalWidth;
-        answerMaskCanvas.height = answerMaskImage.naturalHeight;
-        drawAnswerMasks();
-    };
-    answerMaskImage.onerror = () => showMsg("无法载入错题切片", false);
-    answerMaskImage.src = q.image_url;
-    answerMaskModal.hidden = false;
-}
-
-answerMaskCanvas.onpointerdown = (event) => {
-    answerMaskStart = maskCanvasPoint(event);
-    answerMaskCanvas.setPointerCapture(event.pointerId);
-};
-answerMaskCanvas.onpointerup = (event) => {
-    if (!answerMaskStart) return;
-    const end = maskCanvasPoint(event);
-    const left = Math.min(answerMaskStart[0], end[0]);
-    const top = Math.min(answerMaskStart[1], end[1]);
-    const width = Math.abs(end[0] - answerMaskStart[0]);
-    const height = Math.abs(end[1] - answerMaskStart[1]);
-    answerMaskStart = null;
-    if (width < 8 || height < 8) {
-        showMsg("遮挡框太小，请重新拖动", false);
-        return;
-    }
-    answerMasks.push([
-        left * 1000 / answerMaskCanvas.width,
-        top * 1000 / answerMaskCanvas.height,
-        width * 1000 / answerMaskCanvas.width,
-        height * 1000 / answerMaskCanvas.height,
-    ]);
-    drawAnswerMasks();
-};
-
-document.getElementById("answerMaskClearBtn").onclick = () => {
-    answerMasks = [];
-    drawAnswerMasks();
-};
-document.getElementById("answerMaskCancelBtn").onclick = () => {
-    answerMaskModal.hidden = true;
-};
-answerMaskSaveBtn.onclick = async () => {
-    if (!answerMaskQuestion) return;
-    answerMaskSaveBtn.disabled = true;
-    answerMaskSaveBtn.textContent = "保存中…";
-    try {
-        const response = await fetch(
-            `/api/questions/${answerMaskQuestion.id}/answer-masks`,
-            {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ masks: answerMasks }),
-            }
-        );
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.detail || "保存遮挡失败");
-        answerMaskModal.hidden = true;
-        renderList();
-        showMsg("答案遮挡已保存，只会应用到切片练习卷", true);
-    } catch (error) {
-        showMsg(error.message, false);
-    } finally {
-        answerMaskSaveBtn.disabled = false;
-        answerMaskSaveBtn.textContent = "保存遮挡";
-    }
-};
-
-async function recorrectPage(q, button) {
-    button.disabled = true;
-    button.textContent = "校正并识别…";
-    try {
-        const response = await fetch(
-            `/api/questions/${q.id}/recorrect/preview`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ points: null }),
-            }
-        );
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.detail || "生成校正预览失败");
-        if (!result.page_detected) {
-            fetch(`/api/recorrect/preview/${encodeURIComponent(result.preview_filename)}`, {
-                method: "DELETE",
-            });
-            showMsg("没有可靠识别出纸张四角，请在原图上手动选择四角", false);
-            openManualCorrect(q);
-            return;
-        }
-        openCropReview(result, q);
-    } catch (error) {
-        showMsg(error.message, false);
-    } finally {
-        button.disabled = false;
-        button.textContent = "校正并切割";
-    }
 }
 
 function openEdit(q) {
@@ -577,15 +198,512 @@ function openEdit(q) {
 function deleteQuestion(id) {
     if (!confirm("确定删除这道错题吗？照片也会一并删除。")) return;
     fetch("/api/questions/" + id, { method: "DELETE" }).then((r) => {
-        if (r.ok) {
-            renderList();
-        } else {
-            alert("删除失败");
-        }
+        if (r.ok) refresh();
+        else showMsg("删除失败", false);
     });
 }
 
+function refresh() {
+    fetch("/api/questions")
+        .then((r) => r.json())
+        .then(renderList)
+        .catch(() => showMsg("加载错题列表失败", false));
+}
+
+// ---------- 分割线编辑器 ----------
+//
+// 划线代替画框：一道题 = 两条线之间的部分。
+// 画框要从题的上边缘一路拖到下边缘（N 次长距离精确拖动）；
+// 划线只在题目的空隙里划一下（N-1 次短距离滑动），精度要求低得多。
+
+const splitModal = document.getElementById("splitModal");
+const splitCanvas = document.getElementById("splitCanvas");
+const splitContext = splitCanvas.getContext("2d");
+const splitCount = document.getElementById("splitCount");
+const splitLineChips = document.getElementById("splitLineChips");
+const splitSaveBtn = document.getElementById("splitSaveBtn");
+
+const LINE_HIT_PX = 22;      // 命中判定半径（屏幕像素，与图缩放无关）
+const MIN_LINE_GAP_PX = 14;  // 两条线之间的最小间隔（屏幕像素）
+
+let splitQuestionRef = null;
+let splitImage = null;
+let splitLines = [];
+let splitDragIndex = -1;
+let splitDragMoved = false;
+let splitChipsRendered = -1;
+
+function splitCanvasY(event) {
+    const rect = splitCanvas.getBoundingClientRect();
+    return Math.max(0, Math.min(splitCanvas.height, (event.clientY - rect.top) * splitCanvas.height / rect.height));
+}
+
+// 画布是按原始像素绘制的，但显示时会被 CSS 缩小。抓手和命中半径必须换算成
+// "屏幕像素 → 画布像素"，否则图一小，抓手就只剩几个像素，几乎抓不住。
+function screenToCanvasScale() {
+    const rect = splitCanvas.getBoundingClientRect();
+    if (rect.height <= 0) return 1;
+    return splitCanvas.height / rect.height;
+}
+
+function drawSplit() {
+    if (!splitImage) return;
+    const { width, height } = splitCanvas;
+    const scale = screenToCanvasScale();
+    const px = (screenPixels) => Math.max(2, screenPixels * scale);
+
+    splitContext.clearRect(0, 0, width, height);
+    splitContext.drawImage(splitImage, 0, 0, width, height);
+
+    // 交替底色，让"第几道题"一眼可数
+    let top = 0;
+    splitLines.concat([height]).forEach((bottom, index) => {
+        if (bottom <= top) return;
+        splitContext.fillStyle = index % 2 ? "rgba(74,108,247,0.10)" : "rgba(74,108,247,0.03)";
+        splitContext.fillRect(0, top, width, bottom - top);
+        const label = `${index + 1}`;
+        splitContext.font = `bold ${px(18)}px sans-serif`;
+        splitContext.textAlign = "center";
+        splitContext.textBaseline = "middle";
+        const cx = width / 2;
+        const cy = (top + bottom) / 2;
+        splitContext.fillStyle = "rgba(74,108,247,0.85)";
+        splitContext.beginPath();
+        splitContext.arc(cx, cy, px(16), 0, Math.PI * 2);
+        splitContext.fill();
+        splitContext.fillStyle = "#fff";
+        splitContext.fillText(label, cx, cy);
+        top = bottom;
+    });
+
+    // 分割线本身：一条横线 + 中间一个抓手
+    splitLines.forEach((line, index) => {
+        const active = index === splitDragIndex;
+        splitContext.strokeStyle = active ? "#ff8f1f" : "#f44336";
+        splitContext.lineWidth = px(active ? 4 : 2.5);
+        splitContext.beginPath();
+        splitContext.moveTo(0, line);
+        splitContext.lineTo(width, line);
+        splitContext.stroke();
+
+        const cx = width / 2;
+        const radius = px(17);
+        splitContext.fillStyle = active ? "#ff8f1f" : "#f44336";
+        splitContext.beginPath();
+        splitContext.arc(cx, line, radius, 0, Math.PI * 2);
+        splitContext.fill();
+        splitContext.fillStyle = "#fff";
+        splitContext.font = `bold ${px(15)}px sans-serif`;
+        splitContext.textAlign = "center";
+        splitContext.textBaseline = "middle";
+        splitContext.fillText("↕", cx, line);
+    });
+
+    splitCount.textContent = `当前 ${splitLines.length + 1} 道题`;
+    splitSaveBtn.disabled = false;
+    // 拖动过程中不重建标签（会闪），只在条数变化或拖动结束时刷新
+    if (splitDragIndex < 0 && splitChipsRendered !== splitLines.length) refreshLineChips();
+}
+
+function hitLine(event) {
+    if (splitCanvas.getBoundingClientRect().height <= 0) return -1;
+    const tolerance = LINE_HIT_PX * screenToCanvasScale();
+    let best = -1;
+    let bestDistance = Infinity;
+    splitLines.forEach((line, index) => {
+        const distance = Math.abs(splitCanvasY(event) - line);
+        if (distance <= tolerance && distance < bestDistance) {
+            best = index;
+            bestDistance = distance;
+        }
+    });
+    return best;
+}
+
+function openSplit(q) {
+    splitQuestionRef = q;
+    splitModal.hidden = false;
+    splitCount.textContent = "正在载入整页原图…";
+    fetch(`/api/questions/${q.id}/page`)
+        .then(async (r) => {
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.detail || "读取整页原图失败");
+            return data;
+        })
+        .then((data) => {
+            splitLines = (data.lines || []).slice().sort((a, b) => a - b);
+            const img = new Image();
+            img.onload = () => {
+                splitImage = img;
+                splitCanvas.width = img.naturalWidth;
+                splitCanvas.height = img.naturalHeight;
+                drawSplit();
+            };
+            img.onerror = () => showMsg("无法载入整页原图", false);
+            img.src = data.source_image_url;
+        })
+        .catch((error) => {
+            splitModal.hidden = true;
+            showMsg(error.message, false);
+        });
+}
+
+splitCanvas.addEventListener("pointerdown", (event) => {
+    const index = hitLine(event);
+    if (index >= 0) {
+        splitDragIndex = index;
+        splitDragMoved = false;
+        splitCanvas.setPointerCapture(event.pointerId);
+        drawSplit();
+        return;
+    }
+    // 点在线的空白处 = 在这里加一条线
+    const minGap = MIN_LINE_GAP_PX * screenToCanvasScale();
+    const y = Math.round(splitCanvasY(event));
+    if (y < minGap || y > splitCanvas.height - minGap) return;
+    if (splitLines.some((line) => Math.abs(line - y) < minGap)) return;
+    if (splitLines.length >= 20) {
+        showMsg("一页最多切 21 道题", false);
+        return;
+    }
+    splitLines.push(y);
+    splitLines.sort((a, b) => a - b);
+    drawSplit();
+});
+
+splitCanvas.addEventListener("pointermove", (event) => {
+    if (splitDragIndex < 0) return;
+    splitDragMoved = true;
+    const minGap = MIN_LINE_GAP_PX * screenToCanvasScale();
+    const y = Math.round(splitCanvasY(event));
+    splitLines[splitDragIndex] = Math.max(minGap, Math.min(splitCanvas.height - minGap, y));
+    drawSplit();
+});
+
+splitCanvas.addEventListener("pointerup", () => {
+    if (splitDragIndex < 0) return;
+    const minGap = MIN_LINE_GAP_PX * screenToCanvasScale();
+    splitLines.sort((a, b) => a - b);
+    const deduped = splitLines.filter((line, index) => index === 0 || line - splitLines[index - 1] >= minGap);
+    splitLines = deduped;
+    splitDragIndex = -1;
+    drawSplit();
+});
+
+// 分割线的小标签：删除必须点标签，避免在图上误点就把线弄没了。
+function refreshLineChips() {
+    splitLineChips.innerHTML = "";
+    splitLines.forEach((line, index) => {
+        const chip = document.createElement("button");
+        chip.className = "line-chip";
+        chip.textContent = `线 ${index + 1} ×`;
+        chip.title = "删除这条分割线";
+        chip.onclick = () => {
+            splitLines.splice(index, 1);
+            drawSplit();
+        };
+        splitLineChips.appendChild(chip);
+    });
+    if (!splitLines.length) {
+        const tip = document.createElement("span");
+        tip.className = "line-chip-empty";
+        tip.textContent = "还没有分割线，整页就是一道错题。在题目空隙点一下就能加线。";
+        splitLineChips.appendChild(tip);
+    }
+    splitChipsRendered = splitLines.length;
+}
+
+function closeSplit() {
+    splitModal.hidden = true;
+    splitQuestionRef = null;
+    splitImage = null;
+    splitLines = [];
+}
+
+document.getElementById("splitCancelBtn").onclick = closeSplit;
+
+document.getElementById("splitResetBtn").onclick = () => {
+    if (!splitQuestionRef) return;
+    const button = document.getElementById("splitResetBtn");
+    button.disabled = true;
+    fetch(`/api/questions/${splitQuestionRef.id}/suggest`, { method: "POST" })
+        .then((r) => r.json().catch(() => ({})))
+        .then((data) => {
+            button.disabled = false;
+            if (!data.lines) {
+                showMsg(data.detail || "重新自动切分不可用", false);
+                return;
+            }
+            splitLines = data.lines.slice().sort((a, b) => a - b);
+            drawSplit();
+            showMsg(
+                splitLines.length
+                    ? `已自动切成 ${splitLines.length + 1} 道，可继续拖动调整`
+                    : "这一页没找到明显的题间空隙，已按整页一道处理",
+                true
+            );
+        })
+        .catch(() => {
+            button.disabled = false;
+            showMsg("重新自动切分失败", false);
+        });
+};
+
+splitSaveBtn.onclick = async () => {
+    if (!splitQuestionRef) return;
+    splitSaveBtn.disabled = true;
+    splitSaveBtn.textContent = "保存中…";
+    try {
+        const response = await fetch(`/api/questions/${splitQuestionRef.id}/split`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ lines: splitLines }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || "保存切割结果失败");
+        closeSplit();
+        refresh();
+        showMsg(`已切成 ${result.questions.length} 道错题`, true);
+    } catch (error) {
+        showMsg(error.message, false);
+    } finally {
+        splitSaveBtn.textContent = "保存";
+        splitSaveBtn.disabled = false;
+    }
+};
+
+// ---------- 手动四点摆正 ----------
+
+const cornerModal = document.getElementById("cornerModal");
+const cornerCanvas = document.getElementById("cornerCanvas");
+const cornerContext = cornerCanvas.getContext("2d");
+const cornerHint = document.getElementById("cornerHint");
+const cornerApplyBtn = document.getElementById("cornerApplyBtn");
+const CORNER_NAMES = ["左上角", "右上角", "右下角", "左下角"];
+let cornerPoints = [];
+let cornerSourceUrl = "";
+
+function drawCorners() {
+    if (!splitImage) return;
+    cornerContext.clearRect(0, 0, cornerCanvas.width, cornerCanvas.height);
+    cornerContext.drawImage(splitImage, 0, 0, cornerCanvas.width, cornerCanvas.height);
+    if (cornerPoints.length) {
+        cornerContext.strokeStyle = "#f44336";
+        cornerContext.fillStyle = "#f44336";
+        cornerContext.lineWidth = Math.max(3, cornerCanvas.width / 300);
+        cornerContext.beginPath();
+        cornerPoints.forEach((point, index) => {
+            if (index === 0) cornerContext.moveTo(point[0], point[1]);
+            else cornerContext.lineTo(point[0], point[1]);
+        });
+        if (cornerPoints.length === 4) cornerContext.closePath();
+        cornerContext.stroke();
+        cornerPoints.forEach((point, index) => {
+            cornerContext.beginPath();
+            cornerContext.arc(point[0], point[1], Math.max(8, cornerCanvas.width / 90), 0, Math.PI * 2);
+            cornerContext.fill();
+            cornerContext.fillStyle = "#fff";
+            cornerContext.font = `bold ${Math.max(14, cornerCanvas.width / 45)}px sans-serif`;
+            cornerContext.textAlign = "center";
+            cornerContext.textBaseline = "middle";
+            cornerContext.fillText(String(index + 1), point[0], point[1]);
+            cornerContext.fillStyle = "#f44336";
+        });
+    }
+    cornerApplyBtn.disabled = cornerPoints.length !== 4;
+    cornerHint.textContent =
+        cornerPoints.length < 4
+            ? `请点击${CORNER_NAMES[cornerPoints.length]}（第 ${cornerPoints.length + 1} 个点）`
+            : "四个角已选好；红线内的区域将被拉成矩形";
+}
+
+document.getElementById("splitStraightenBtn").onclick = () => {
+    if (!splitQuestionRef) return;
+    cornerPoints = [];
+    cornerCanvas.width = splitCanvas.width;
+    cornerCanvas.height = splitCanvas.height;
+    cornerContext.drawImage(splitImage, 0, 0);
+    cornerHint.textContent = "正在载入…";
+    cornerModal.hidden = false;
+    drawCorners();
+};
+
+cornerCanvas.onclick = (event) => {
+    if (cornerPoints.length >= 4) return;
+    const rect = cornerCanvas.getBoundingClientRect();
+    cornerPoints.push([
+        (event.clientX - rect.left) * cornerCanvas.width / rect.width,
+        (event.clientY - rect.top) * cornerCanvas.height / rect.height,
+    ]);
+    drawCorners();
+};
+
+document.getElementById("cornerResetBtn").onclick = () => {
+    cornerPoints = [];
+    drawCorners();
+};
+document.getElementById("cornerCancelBtn").onclick = () => (cornerModal.hidden = true);
+
+cornerApplyBtn.onclick = async () => {
+    if (!splitQuestionRef || cornerPoints.length !== 4) return;
+    cornerApplyBtn.disabled = true;
+    cornerApplyBtn.textContent = "摆正中…";
+    try {
+        const response = await fetch(`/api/questions/${splitQuestionRef.id}/straighten`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ points: cornerPoints, lines: [] }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || "手动摆正失败");
+        cornerModal.hidden = true;
+        splitImage = null;
+        const img = new Image();
+        img.onload = () => {
+            splitImage = img;
+            splitCanvas.width = img.naturalWidth;
+            splitCanvas.height = img.naturalHeight;
+            splitLines = (result.lines || []).slice().sort((a, b) => a - b);
+            drawSplit();
+            refresh();
+            showMsg("已摆正并重新切分，可继续拖动分割线", true);
+        };
+        img.onerror = () => showMsg("无法载入摆正后的图片", false);
+        img.src = result.source_image_url;
+    } catch (error) {
+        showMsg(error.message, false);
+    } finally {
+        cornerApplyBtn.textContent = "确认摆正";
+        cornerApplyBtn.disabled = cornerPoints.length !== 4;
+    }
+};
+
+// ---------- 答案遮挡 ----------
+
+const maskModal = document.getElementById("maskModal");
+const maskCanvas = document.getElementById("maskCanvas");
+const maskContext = maskCanvas.getContext("2d");
+const maskList = document.getElementById("maskList");
+const maskSaveBtn = document.getElementById("maskSaveBtn");
+let maskQuestionRef = null;
+let maskImage = null;
+let masks = [];
+let maskStart = null;
+
+function maskPoint(event) {
+    const rect = maskCanvas.getBoundingClientRect();
+    return [
+        Math.max(0, Math.min(maskCanvas.width, (event.clientX - rect.left) * maskCanvas.width / rect.width)),
+        Math.max(0, Math.min(maskCanvas.height, (event.clientY - rect.top) * maskCanvas.height / rect.height)),
+    ];
+}
+
+function drawMasks() {
+    if (!maskImage) return;
+    maskContext.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    maskContext.drawImage(maskImage, 0, 0);
+    masks.forEach((mask) => {
+        const x = (mask[0] * maskCanvas.width) / 1000;
+        const y = (mask[1] * maskCanvas.height) / 1000;
+        const width = (mask[2] * maskCanvas.width) / 1000;
+        const height = (mask[3] * maskCanvas.height) / 1000;
+        maskContext.fillStyle = "rgba(255,255,255,0.82)";
+        maskContext.strokeStyle = "#f56c6c";
+        maskContext.lineWidth = Math.max(2, maskCanvas.width / 400);
+        maskContext.fillRect(x, y, width, height);
+        maskContext.strokeRect(x, y, width, height);
+    });
+    maskList.innerHTML = "";
+    masks.forEach((mask, index) => {
+        const chip = document.createElement("button");
+        chip.className = "mask-chip";
+        chip.textContent = `遮挡 ${index + 1} ×`;
+        chip.onclick = () => {
+            masks.splice(index, 1);
+            drawMasks();
+        };
+        maskList.appendChild(chip);
+    });
+}
+
+function openMask(q) {
+    maskQuestionRef = q;
+    try {
+        masks = JSON.parse(q.answer_masks || "[]");
+    } catch (e) {
+        masks = [];
+    }
+    const img = new Image();
+    img.onload = () => {
+        maskImage = img;
+        maskCanvas.width = img.naturalWidth;
+        maskCanvas.height = img.naturalHeight;
+        drawMasks();
+    };
+    img.onerror = () => showMsg("无法载入错题图片", false);
+    img.src = q.image_url;
+    maskModal.hidden = false;
+}
+
+maskCanvas.addEventListener("pointerdown", (event) => {
+    maskStart = maskPoint(event);
+    maskCanvas.setPointerCapture(event.pointerId);
+});
+
+maskCanvas.addEventListener("pointerup", (event) => {
+    if (!maskStart) return;
+    const end = maskPoint(event);
+    const left = Math.min(maskStart[0], end[0]);
+    const top = Math.min(maskStart[1], end[1]);
+    const width = Math.abs(end[0] - maskStart[0]);
+    const height = Math.abs(end[1] - maskStart[1]);
+    maskStart = null;
+    if (width < 8 || height < 8) {
+        showMsg("遮挡框太小，请重新拖动", false);
+        return;
+    }
+    masks.push([
+        (left * 1000) / maskCanvas.width,
+        (top * 1000) / maskCanvas.height,
+        (width * 1000) / maskCanvas.width,
+        (height * 1000) / maskCanvas.height,
+    ]);
+    drawMasks();
+});
+
+document.getElementById("maskClearBtn").onclick = () => {
+    masks = [];
+    drawMasks();
+};
+document.getElementById("maskCancelBtn").onclick = () => (maskModal.hidden = true);
+
+maskSaveBtn.onclick = async () => {
+    if (!maskQuestionRef) return;
+    maskSaveBtn.disabled = true;
+    maskSaveBtn.textContent = "保存中…";
+    try {
+        const response = await fetch(`/api/questions/${maskQuestionRef.id}/answer-masks`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ masks }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || "保存遮挡失败");
+        maskModal.hidden = true;
+        refresh();
+        showMsg("遮挡已保存，只会应用到练习卷", true);
+    } catch (error) {
+        showMsg(error.message, false);
+    } finally {
+        maskSaveBtn.disabled = false;
+        maskSaveBtn.textContent = "保存遮挡";
+    }
+};
+
+// ---------- 上传 ----------
+
 pickPhotoBtn.onclick = () => photoInput.click();
+
 photoInput.onchange = () => {
     if (!photoInput.files.length) return;
     previewImg.src = URL.createObjectURL(photoInput.files[0]);
@@ -598,30 +716,34 @@ submitBtn.onclick = () => {
         return;
     }
     submitBtn.disabled = true;
+    submitBtn.textContent = "识别中…";
     const fd = new FormData();
     fd.append("subject", "数学");
     fd.append("photo", photoInput.files[0]);
 
     fetch("/api/pages", { method: "POST", body: fd })
         .then(async (r) => {
-            if (!r.ok) {
-                const err = await r.json().catch(() => ({}));
-                throw new Error(err.detail || "保存失败");
-            }
+            const result = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(result.detail || "保存失败");
+            return result;
+        })
+        .then((result) => {
             photoInput.value = "";
             photoPreview.hidden = true;
-            const result = await r.json();
-            const created = result.questions || [];
-            renderList();
-            if (created.length) {
-                const detection = result.red_mark_count
-                    ? `检测到 ${result.red_mark_count} 组明显红叉/圈叉，已切成 ${created.length} 道候选错题`
-                    : "未检测到红色批改，已按完整照片保存";
-                showMsg(detection, true);
-            }
+            refresh();
+            const count = (result.questions || []).length;
+            showMsg(
+                count > 1
+                    ? `已切成 ${count} 道错题，切得不理想可点"调整切题"拖分割线`
+                    : "已保存为一道错题（整页原图）",
+                true
+            );
         })
         .catch((e) => showMsg(e.message, false))
-        .finally(() => (submitBtn.disabled = false));
+        .finally(() => {
+            submitBtn.disabled = false;
+            submitBtn.textContent = "保存错题";
+        });
 };
 
 document.getElementById("editSaveBtn").onclick = () => {
@@ -635,19 +757,17 @@ document.getElementById("editSaveBtn").onclick = () => {
     }).then((r) => {
         if (r.ok) {
             document.getElementById("editModal").hidden = true;
-            renderList();
+            refresh();
         } else {
-            alert("保存失败");
+            showMsg("保存失败", false);
         }
     });
 };
-document.getElementById("editCancelBtn").onclick = () =>
-    (document.getElementById("editModal").hidden = true);
-document.getElementById("lightboxCloseBtn").onclick = () =>
-    (document.getElementById("lightbox").hidden = true);
+document.getElementById("editCancelBtn").onclick = () => (document.getElementById("editModal").hidden = true);
+document.getElementById("lightboxCloseBtn").onclick = () => (document.getElementById("lightbox").hidden = true);
 document.getElementById("lightbox").onclick = (e) => {
     if (e.target.id === "lightbox") e.target.hidden = true;
 };
 
 initKpList();
-renderList();
+refresh();
