@@ -34,6 +34,7 @@ const emptyHint = document.getElementById("emptyHint");
 
 let editingId = null;
 let questionsCache = [];
+let previewObjectUrl = null;  // 预览用的 blob URL，必须及时 revoke，否则每选一张照片都泄漏一份
 
 function showMsg(text, ok) {
     uploadMsg.textContent = text;
@@ -197,10 +198,12 @@ function openEdit(q) {
 
 function deleteQuestion(id) {
     if (!confirm("确定删除这道错题吗？照片也会一并删除。")) return;
-    fetch("/api/questions/" + id, { method: "DELETE" }).then((r) => {
-        if (r.ok) refresh();
-        else showMsg("删除失败", false);
-    });
+    fetch("/api/questions/" + id, { method: "DELETE" })
+        .then((r) => {
+            if (r.ok) refresh();
+            else showMsg("删除失败", false);
+        })
+        .catch(() => showMsg("删除失败", false));
 }
 
 function refresh() {
@@ -706,7 +709,9 @@ pickPhotoBtn.onclick = () => photoInput.click();
 
 photoInput.onchange = () => {
     if (!photoInput.files.length) return;
-    previewImg.src = URL.createObjectURL(photoInput.files[0]);
+    if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+    previewObjectUrl = URL.createObjectURL(photoInput.files[0]);
+    previewImg.src = previewObjectUrl;
     photoPreview.hidden = false;
 };
 
@@ -730,6 +735,10 @@ submitBtn.onclick = () => {
         .then((result) => {
             photoInput.value = "";
             photoPreview.hidden = true;
+            if (previewObjectUrl) {
+                URL.revokeObjectURL(previewObjectUrl);
+                previewObjectUrl = null;
+            }
             refresh();
             const count = (result.questions || []).length;
             showMsg(
@@ -761,7 +770,7 @@ document.getElementById("editSaveBtn").onclick = () => {
         } else {
             showMsg("保存失败", false);
         }
-    });
+    }).catch(() => showMsg("保存失败", false));
 };
 document.getElementById("editCancelBtn").onclick = () => (document.getElementById("editModal").hidden = true);
 document.getElementById("lightboxCloseBtn").onclick = () => (document.getElementById("lightbox").hidden = true);
