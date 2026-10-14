@@ -285,11 +285,19 @@ textarea:focus {
     color: #999;
 }
 
+/* 全局提示做成浮层 toast：弹窗（z-index 100）打开时，切题/遮答案的报错
+   也必须看得见，所以不能留在文档流里被遮罩压住。 */
 .msg {
-    margin-top: 10px;
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 300;
+    max-width: min(480px, calc(100vw - 32px));
     padding: 10px 14px;
     border-radius: 8px;
     font-size: 14px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
 }
 
 .msg.ok {
