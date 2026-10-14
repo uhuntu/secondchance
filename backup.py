@@ -40,7 +40,7 @@ def create_backup(output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
         raise FileNotFoundError(f"未找到 {DB_PATH} 或 {UPLOAD_DIR}，请在项目目录下运行")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / f"one-more-paper-{datetime.now():%Y%m%d-%H%M%S}.zip"
+    target = output_dir / f"retake-{datetime.now():%Y%m%d-%H%M%S}.zip"
     with tempfile.TemporaryDirectory() as temp:
         snapshot = Path(temp) / "questions.db"
         if has_db:

@@ -66,8 +66,8 @@ def test_ensure_schema_migrates_absolute_paths_to_filenames():
                 conn.exec_driver_sql(
                     "INSERT INTO questions (subject, image_path, source_image_path)"
                     " VALUES ('数学',"
-                    " 'C:\\Users\\huntl\\one-more-paper\\uploads\\abc_reviewed_1_q1.jpg',"
-                    " 'C:\\Users\\huntl\\one-more-paper\\uploads\\abc_original.jpg')"
+                    " 'C:\\Users\\huntl\\retake\\uploads\\abc_reviewed_1_q1.jpg',"
+                    " 'C:\\Users\\huntl\\retake\\uploads\\abc_original.jpg')"
                 )
             ensure_schema(engine)
             with engine.begin() as conn:
