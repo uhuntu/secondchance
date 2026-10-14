@@ -34,6 +34,38 @@ const emptyHint = document.getElementById("emptyHint");
 
 let editingId = null;
 let questionsCache = [];
+let libraryOpen = false;
+let draft = { candidates: [], selected: [] };
+try {
+    const saved = JSON.parse(sessionStorage.getItem("retake-draft"));
+    if (saved && Array.isArray(saved.candidates) && Array.isArray(saved.selected)) draft = saved;
+} catch (_) { /* Storage may be unavailable; the current session still works. */ }
+let candidateIds = new Set(draft.candidates);
+let selectedIds = new Set(draft.selected);
+
+function updateSelection() {
+    document.getElementById("selectionCount").textContent = `已选 ${selectedIds.size} 道题`;
+    document.getElementById("printSelectedBtn").disabled = !selectedIds.size;
+    try {
+        sessionStorage.setItem("retake-draft", JSON.stringify({ candidates: [...candidateIds], selected: [...selectedIds] }));
+    } catch (_) { /* Keep the in-memory draft. */ }
+}
+
+function replaceDraftGroup(previous, replacements) {
+    const old = questionsCache.filter(q => q.source_image_url === previous.source_image_url);
+    const inDraft = old.some(q => candidateIds.has(q.id));
+    old.forEach(q => { candidateIds.delete(q.id); selectedIds.delete(q.id); });
+    if (inDraft) replacements.forEach(q => candidateIds.add(q.id));
+    updateSelection();
+}
+
+document.getElementById("libraryBtn").onclick = () => { libraryOpen = !libraryOpen; renderList(); };
+document.getElementById("clearSelectionBtn").onclick = () => {
+    candidateIds.clear(); selectedIds.clear(); libraryOpen = false; renderList();
+};
+document.getElementById("printSelectedBtn").onclick = () => {
+    if (selectedIds.size) window.open(`/static/paper.html?ids=${[...selectedIds].join(",")}`, "_blank");
+};
 let previewObjectUrl = null;  // 预览用的 blob URL，必须及时 revoke，否则每选一张照片都泄漏一份
 
 function showMsg(text, ok) {
@@ -57,11 +89,18 @@ function initKpList() {
 
 function renderList(list) {
     if (list) questionsCache = list;
+    const existing = new Set(questionsCache.map(q => q.id));
+    candidateIds = new Set([...candidateIds].filter(id => existing.has(id)));
+    selectedIds = new Set([...selectedIds].filter(id => existing.has(id)));
+    updateSelection();
+    document.getElementById("listTitle").textContent = libraryOpen ? "从以前的题里选" : "本次重练";
+    document.getElementById("libraryBtn").textContent = libraryOpen ? "返回本次重练" : "从以前的题里选";
+    const visible = libraryOpen ? questionsCache : questionsCache.filter(q => candidateIds.has(q.id));
     questionList.innerHTML = "";
-    emptyHint.hidden = questionsCache.length > 0;
+    emptyHint.hidden = visible.length > 0;
 
     const groups = new Map();
-    questionsCache.forEach((q) => {
+    visible.forEach((q) => {
         const key = q.source_image_url || `single-${q.id}`;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(q);
@@ -77,7 +116,7 @@ function renderList(list) {
         const heading = document.createElement("div");
         const title = document.createElement("h3");
         title.textContent = representative.source_image_url
-            ? `${items.length} 道错题`
+            ? `${items.length} 道题`
             : "单题照片";
         const dates = items.map((item) => new Date(item.created_at));
         const meta = document.createElement("span");
@@ -88,8 +127,7 @@ function renderList(list) {
         actions.className = "worksheet-actions";
         if (representative.source_image_url) {
             actions.append(
-                smallButton("看整页", () => openLightbox(representative.source_image_url)),
-                smallButton("调整切题", () => openSplit(representative))
+                smallButton("看整页", () => openLightbox(representative.source_image_url))
             );
         }
         header.append(heading, actions);
@@ -123,7 +161,25 @@ function buildCard(q, index) {
     const body = document.createElement("div");
     body.className = "q-card-body";
 
-    // 知识点直接显示在卡片上，点一下就能改：这是每天都会用到的动作，不该藏在弹窗里。
+    const choice = document.createElement("label");
+    choice.className = "question-choice";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedIds.has(q.id);
+    card.classList.toggle("selected", checkbox.checked);
+    checkbox.onchange = () => {
+        candidateIds.add(q.id);
+        if (checkbox.checked) selectedIds.add(q.id); else selectedIds.delete(q.id);
+        card.classList.toggle("selected", checkbox.checked);
+        updateSelection();
+    };
+    choice.append(checkbox, document.createTextNode(`第 ${index} 题 · 加入本次重练`));
+    body.appendChild(choice);
+
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "修正 / 备注";
+    details.appendChild(summary);
     const kp = document.createElement("input");
     kp.type = "text";
     kp.className = "kp-inline";
@@ -132,13 +188,13 @@ function buildCard(q, index) {
     kp.value = q.knowledge_point || "";
     kp.onclick = (e) => e.stopPropagation();
     kp.onchange = () => saveField(q, "knowledge_point", kp.value.trim(), kp);
-    body.appendChild(kp);
+    details.appendChild(kp);
 
     if (q.note) {
         const noteEl = document.createElement("div");
         noteEl.className = "q-note";
         noteEl.textContent = q.note;
-        body.appendChild(noteEl);
+        details.appendChild(noteEl);
     }
 
     const actions = document.createElement("div");
@@ -154,8 +210,10 @@ function buildCard(q, index) {
         smallButton("备注", () => openEdit(q)),
         smallButton("删除", () => deleteQuestion(q.id))
     );
-
-    card.append(img, body, actions);
+    if (q.source_image_url) actions.append(smallButton("调整整页切题", () => openSplit(q)));
+    details.appendChild(actions);
+    body.appendChild(details);
+    card.append(img, body);
     return card;
 }
 
@@ -207,8 +265,8 @@ function deleteQuestion(id) {
 }
 
 function refresh() {
-    fetch("/api/questions")
-        .then((r) => r.json())
+    return fetch("/api/questions")
+        .then((r) => { if (!r.ok) throw new Error("加载失败"); return r.json(); })
         .then(renderList)
         .catch(() => showMsg("加载错题列表失败", false));
 }
@@ -464,9 +522,10 @@ splitSaveBtn.onclick = async () => {
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.detail || "保存切割结果失败");
+        replaceDraftGroup(splitQuestionRef, result.questions);
         closeSplit();
         refresh();
-        showMsg(`已切成 ${result.questions.length} 道错题`, true);
+        showMsg(`已切成 ${result.questions.length} 道题，请重新勾选这一页要重练的题`, true);
     } catch (error) {
         showMsg(error.message, false);
     } finally {
@@ -559,6 +618,8 @@ cornerApplyBtn.onclick = async () => {
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.detail || "手动摆正失败");
+        replaceDraftGroup(splitQuestionRef, result.questions);
+        splitQuestionRef = result.questions[0];
         cornerModal.hidden = true;
         splitImage = null;
         const img = new Image();
@@ -569,7 +630,7 @@ cornerApplyBtn.onclick = async () => {
             splitLines = (result.lines || []).slice().sort((a, b) => a - b);
             drawSplit();
             refresh();
-            showMsg("已摆正并重新切分，可继续拖动分割线", true);
+            showMsg("已摆正，请在切题完成后重新勾选这一页要重练的题", true);
         };
         img.onerror = () => showMsg("无法载入摆正后的图片", false);
         img.src = result.source_image_url;
@@ -713,6 +774,7 @@ photoInput.onchange = () => {
     previewObjectUrl = URL.createObjectURL(photoInput.files[0]);
     previewImg.src = previewObjectUrl;
     photoPreview.hidden = false;
+    submitBtn.hidden = false;
 };
 
 submitBtn.onclick = () => {
@@ -733,8 +795,11 @@ submitBtn.onclick = () => {
             return result;
         })
         .then((result) => {
+            (result.questions || []).forEach(q => candidateIds.add(q.id));
+            libraryOpen = false;
             photoInput.value = "";
             photoPreview.hidden = true;
+            submitBtn.hidden = true;
             if (previewObjectUrl) {
                 URL.revokeObjectURL(previewObjectUrl);
                 previewObjectUrl = null;
@@ -743,15 +808,15 @@ submitBtn.onclick = () => {
             const count = (result.questions || []).length;
             showMsg(
                 count > 1
-                    ? `已切成 ${count} 道错题，切得不理想可点"调整切题"拖分割线`
-                    : "已保存为一道错题（整页原图）",
+                    ? `已整理出 ${count} 道题，请勾选要重练的题`
+                    : "已保存整页，可在“修正”中调整切题，再勾选",
                 true
             );
         })
         .catch((e) => showMsg(e.message, false))
         .finally(() => {
             submitBtn.disabled = false;
-            submitBtn.textContent = "保存错题";
+            submitBtn.textContent = "用这张照片";
         });
 };
 

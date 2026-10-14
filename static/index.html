@@ -4,16 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>再练一卷</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261014">
+    <link rel="stylesheet" href="/static/style.css?v=20261014-flow">
 </head>
 <body>
     <header>
         <h1>再练一卷</h1>
-        <p class="subtitle">拍下作业页 · 自动挑出错题 · 遮住答案重练</p>
+        <p class="subtitle">把这次没做会的题，再做一次。</p>
     </header>
 
     <main>
         <section class="upload-card">
+            <p class="step-label">01 拍作业</p>
+            <h2>今天重练哪几道？</h2>
             <div class="photo-picker">
                 <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
                 <button type="button" id="pickPhotoBtn" class="btn btn-primary btn-large">
@@ -23,14 +25,23 @@
                     <img id="previewImg" alt="预览">
                 </div>
             </div>
-            <button type="button" id="submitBtn" class="btn btn-primary btn-large">保存错题</button>
-            <button type="button" class="btn btn-large" onclick="window.open('/static/paper.html', '_blank')">📝 生成练习卷</button>
-            <p class="hint">拍整页作业就行。系统会自动挑出错题，切得不理想再拖分割线微调。</p>
+            <button type="button" id="submitBtn" class="btn btn-primary btn-large" hidden>用这张照片</button>
+            <p class="hint">拍一页作业，接着看一眼题目，选出需要重练的几道。</p>
             <div id="uploadMsg" class="msg" hidden></div>
         </section>
 
+        <section class="review-heading">
+            <div><p class="step-label">02 选题</p><h2 id="listTitle">本次重练</h2></div>
+            <button type="button" id="libraryBtn" class="btn">从以前的题里选</button>
+        </section>
+        <p class="hint">勾选要打印的题。需要遮答案或调整切题时，展开“修正”。</p>
         <section id="questionList" class="card-grid"></section>
-        <p id="emptyHint" class="empty-hint" hidden>还没有错题，先拍一道吧！</p>
+        <p id="emptyHint" class="empty-hint" hidden>拍一页新作业，或从以前的题里选几道。</p>
+        <section class="print-bar" aria-label="本次练习卷">
+            <div><p class="step-label">03 打印</p><strong id="selectionCount" aria-live="polite">已选 0 道题</strong></div>
+            <button type="button" id="clearSelectionBtn" class="btn">开始新一卷</button>
+            <button type="button" id="printSelectedBtn" class="btn btn-primary" disabled>预览并打印</button>
+        </section>
     </main>
 
     <!-- 备注编辑弹窗 -->
@@ -103,6 +114,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20261014"></script>
+    <script src="/static/app.js?v=20261014-flow"></script>
 </body>
 </html>

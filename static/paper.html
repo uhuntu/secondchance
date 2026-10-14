@@ -119,7 +119,7 @@
             <button type="button" class="btn btn-primary" data-days="0">全部</button>
         </span>
         <span class="filter-label" id="countLabel"></span>
-        <button class="btn btn-primary" onclick="window.print()">🖨️ 打印题目卷（给孩子）</button>
+        <button id="printBtn" class="btn btn-primary" onclick="window.print()" disabled>打印这份练习卷</button>
         <button class="btn" onclick="window.close()">关闭</button>
     </div>
     <div class="paper" id="paper"></div>
@@ -131,6 +131,12 @@
 
         let allQuestions = [];
         let days = 0;
+        const params = new URLSearchParams(location.search);
+        const draftIds = params.has("ids") ? new Set(params.get("ids").split(",").filter(Boolean).map(Number)) : null;
+        if (draftIds) {
+            kpFilter.hidden = true;
+            document.getElementById("rangeFilter").hidden = true;
+        }
 
         function esc(s) {
             const d = document.createElement("div");
@@ -153,6 +159,7 @@
             const kp = kpFilter.value;
             const cutoff = days > 0 ? Date.now() - days * 86400000 : 0;
             return allQuestions.filter((q) => {
+                if (draftIds && !draftIds.has(q.id)) return false;
                 if (kp && (q.knowledge_point || "未分类错题") !== kp) return false;
                 if (cutoff && new Date(q.created_at).getTime() < cutoff) return false;
                 return true;
@@ -190,9 +197,10 @@
             });
 
             countLabel.textContent = `共 ${sections.length} 道`;
+            document.getElementById("printBtn").disabled = true;
 
             if (!sections.length) {
-                paper.innerHTML = '<p class="empty-tip">当前筛选下没有错题，换个筛选条件或先去录几道。</p>';
+                paper.innerHTML = '<p class="empty-tip">没有可打印的题目，请返回首页重新选题。</p>';
                 return;
             }
 
@@ -204,7 +212,7 @@
             sections.forEach((sec) => {
                 if (sec.kp !== lastKp) {
                     if (lastKp !== null) bodyHtml += "</div>";
-                    bodyHtml += `<div class="kp-section"><div class="kp-title">【${esc(sec.kp)}】</div>`;
+                    bodyHtml += `<div class="kp-section">${sec.kp === "未分类错题" ? "" : `<div class="kp-title">【${esc(sec.kp)}】</div>`}`;
                     lastKp = sec.kp;
                 }
                 qNo++;
@@ -218,10 +226,16 @@
 
             paper.innerHTML = `
                 <div class="paper-title">再练一卷</div>
-                <div class="paper-subtitle">${scope.length ? esc(scope.join("　")) : "全部错题"}</div>
+                <div class="paper-subtitle">${draftIds ? "本次重练" : scope.length ? esc(scope.join("　")) : "全部错题"}</div>
                 <div class="paper-meta"><span>姓名：＿＿＿＿＿＿</span><span>日期：${today}</span><span>共 ${qNo} 题</span></div>
                 <div id="questionPart">${bodyHtml}</div>
             `;
+            const images = [...paper.querySelectorAll("img")];
+            Promise.all(images.map(img => img.decode())).then(() => {
+                if (images.every(img => img.isConnected)) document.getElementById("printBtn").disabled = false;
+            }).catch(() => {
+                countLabel.textContent = "题目图片加载失败，请刷新后再打印";
+            });
         }
 
         kpFilter.onchange = buildPaper;
@@ -237,7 +251,7 @@
         };
 
         fetch("/api/questions")
-            .then((r) => r.json())
+            .then((r) => { if (!r.ok) throw new Error("加载失败"); return r.json(); })
             .then((list) => {
                 allQuestions = list;
                 refreshFilters();
