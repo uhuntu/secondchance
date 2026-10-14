@@ -103,7 +103,7 @@ def ensure_schema(target_engine) -> None:
 
 ensure_schema(engine)
 
-app = FastAPI(title="错题采集系统")
+app = FastAPI(title="再练一卷")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 

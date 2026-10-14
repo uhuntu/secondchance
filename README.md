@@ -1,4 +1,4 @@
-# 数学错题本
+# 再练一卷
 
 拍照上传 · 自动挑出错题 · 遮住答案 · 生成练习卷
 
@@ -27,7 +27,7 @@ python -m uvicorn app:app --port 8010
 netsh advfirewall firewall add rule name="WrongQuestionBook-8010" dir=in action=allow protocol=TCP localport=8010
 ```
 
-> 注意：同一 Wi-Fi 下的所有设备都能访问错题本（未加口令），家庭网络请自行评估。
+> 注意：同一 Wi-Fi 下的所有设备都能访问再练一卷（未加口令），家庭网络请自行评估。
 
 ## 使用流程
 

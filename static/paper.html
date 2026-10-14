@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>数学错题练习卷</title>
+    <title>再练一卷 · 练习卷</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -217,7 +217,7 @@
             if (days > 0) scope.push(`近 ${days} 天`);
 
             paper.innerHTML = `
-                <div class="paper-title">数学错题重练卷</div>
+                <div class="paper-title">再练一卷</div>
                 <div class="paper-subtitle">${scope.length ? esc(scope.join("　")) : "全部错题"}</div>
                 <div class="paper-meta"><span>姓名：＿＿＿＿＿＿</span><span>日期：${today}</span><span>共 ${qNo} 题</span></div>
                 <div id="questionPart">${bodyHtml}</div>
