@@ -37,7 +37,7 @@ let questionsCache = [];
 let libraryOpen = false;
 let draft = { candidates: [], selected: [] };
 try {
-    const saved = JSON.parse(sessionStorage.getItem("revisit-draft"));
+    const saved = JSON.parse(sessionStorage.getItem("seconddraft-draft"));
     if (saved && Array.isArray(saved.candidates) && Array.isArray(saved.selected)) draft = saved;
 } catch (_) { /* Storage may be unavailable; the current session still works. */ }
 let candidateIds = new Set(draft.candidates);
@@ -47,7 +47,7 @@ function updateSelection() {
     document.getElementById("selectionCount").textContent = `已选 ${selectedIds.size} 道题`;
     document.getElementById("printSelectedBtn").disabled = !selectedIds.size;
     try {
-        sessionStorage.setItem("revisit-draft", JSON.stringify({ candidates: [...candidateIds], selected: [...selectedIds] }));
+        sessionStorage.setItem("seconddraft-draft", JSON.stringify({ candidates: [...candidateIds], selected: [...selectedIds] }));
     } catch (_) { /* Keep the in-memory draft. */ }
 }
 

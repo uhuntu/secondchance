@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ================================
-echo   Revisit (温故)
+echo   seconddraft (温故)
 echo   Local   http://localhost:8010
 echo   Phone   http://192.168.31.59:8010
 echo           (update the IP if your LAN address changes)
