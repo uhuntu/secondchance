@@ -779,6 +779,27 @@ photoInput.onchange = () => {
     submitBtn.hidden = false;
 };
 
+// 上传一整页并把切出的题放进本次重练；手机照片和高拍仪共用
+async function uploadPage(photo, filename) {
+    const fd = new FormData();
+    fd.append("subject", "数学");
+    fd.append("photo", photo, filename);
+    const r = await fetch("/api/pages", { method: "POST", body: fd });
+    const result = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(result.detail || "保存失败");
+    const questions = result.questions || [];
+    questions.forEach(q => candidateIds.add(q.id));
+    libraryOpen = false;
+    refresh();
+    return questions.length;
+}
+
+function pageSavedText(count) {
+    return count > 1
+        ? `已整理出 ${count} 道题，请勾选要重练的题`
+        : "已保存整页，可在“修正”中调整切题，再勾选";
+}
+
 submitBtn.onclick = () => {
     if (!photoInput.files.length) {
         showMsg("请先拍照或选择照片", false);
@@ -786,19 +807,10 @@ submitBtn.onclick = () => {
     }
     submitBtn.disabled = true;
     submitBtn.textContent = "识别中…";
-    const fd = new FormData();
-    fd.append("subject", "数学");
-    fd.append("photo", photoInput.files[0]);
+    const file = photoInput.files[0];
 
-    fetch("/api/pages", { method: "POST", body: fd })
-        .then(async (r) => {
-            const result = await r.json().catch(() => ({}));
-            if (!r.ok) throw new Error(result.detail || "保存失败");
-            return result;
-        })
-        .then((result) => {
-            (result.questions || []).forEach(q => candidateIds.add(q.id));
-            libraryOpen = false;
+    uploadPage(file, file.name)
+        .then((count) => {
             photoInput.value = "";
             photoPreview.hidden = true;
             submitBtn.hidden = true;
@@ -806,14 +818,7 @@ submitBtn.onclick = () => {
                 URL.revokeObjectURL(previewObjectUrl);
                 previewObjectUrl = null;
             }
-            refresh();
-            const count = (result.questions || []).length;
-            showMsg(
-                count > 1
-                    ? `已整理出 ${count} 道题，请勾选要重练的题`
-                    : "已保存整页，可在“修正”中调整切题，再勾选",
-                true
-            );
+            showMsg(pageSavedText(count), true);
         })
         .catch((e) => showMsg(e.message, false))
         .finally(() => {
@@ -821,6 +826,207 @@ submitBtn.onclick = () => {
             submitBtn.textContent = "用这张照片";
         });
 };
+
+// ---------- 高拍仪 ----------
+//
+// 成者 / 极匠等高拍仪是标准 UVC 摄像头，浏览器直接取流即可，不需要厂商 SDK。
+// getUserMedia 只在安全上下文可用：电脑上用 localhost 打开时显示按钮，
+// 手机经局域网 http 访问时没有这个 API，按钮自动隐藏，继续用手机相机。
+
+const scannerModal = document.getElementById("scannerModal");
+const scannerContent = document.getElementById("scannerContent");
+const scannerVideo = document.getElementById("scannerVideo");
+const scannerSelect = document.getElementById("scannerSelect");
+const scannerInfo = document.getElementById("scannerInfo");
+const scannerStatus = document.getElementById("scannerStatus");
+const scannerShotBtn = document.getElementById("scannerShotBtn");
+const SCANNER_KEY = "secondchance-scanner";
+// 长边上限：A4 300dpi 约 3508px，切题和打印都够用；也让 JPEG 稳定在上传上限以内
+const SCANNER_MAX_SIDE = 3600;
+const mediaDevices = globalThis.navigator?.mediaDevices;
+let scannerStream = null;
+let scannerPrefs = { deviceId: "", rotation: 0 };
+try {
+    scannerPrefs = { ...scannerPrefs, ...JSON.parse(localStorage.getItem(SCANNER_KEY)) };
+} catch (_) { /* 没有记忆也能用，只是每次要重选摄像头 */ }
+let scannerShots = 0;
+let scannerPending = 0;
+let scannerQuestions = 0;
+let scannerQueue = Promise.resolve();
+
+function saveScannerPrefs() {
+    try { localStorage.setItem(SCANNER_KEY, JSON.stringify(scannerPrefs)); } catch (_) { /* 忽略 */ }
+}
+
+function stopScannerStream() {
+    if (scannerStream) scannerStream.getTracks().forEach(t => t.stop());
+    scannerStream = null;
+    scannerVideo.srcObject = null;
+}
+
+function updateScannerStatus(error) {
+    if (error) {
+        scannerStatus.textContent = error;
+        scannerStatus.className = "scanner-status err";
+        return;
+    }
+    scannerStatus.className = "scanner-status";
+    if (!scannerShots) {
+        scannerStatus.textContent = "";
+    } else if (scannerPending) {
+        scannerStatus.textContent = `已拍 ${scannerShots} 页，正在切题 ${scannerPending} 页…`;
+    } else {
+        scannerStatus.textContent = `已拍 ${scannerShots} 页，共切出 ${scannerQuestions} 道题`;
+    }
+}
+
+async function openScannerCamera(deviceId) {
+    stopScannerStream();
+    scannerShotBtn.disabled = true;
+    scannerInfo.textContent = "正在打开…";
+    // 要一个远大于实际的分辨率，浏览器会落到设备支持的最高档
+    const video = { width: { ideal: 4896 }, height: { ideal: 3672 } };
+    let stream;
+    try {
+        stream = await mediaDevices.getUserMedia({ video: deviceId ? { ...video, deviceId: { exact: deviceId } } : video });
+    } catch (error) {
+        // 记住的那台拔掉了：退回系统默认摄像头
+        if (!deviceId || !["OverconstrainedError", "NotFoundError"].includes(error.name)) throw error;
+        stream = await mediaDevices.getUserMedia({ video });
+    }
+    if (scannerModal.hidden) {  // 摄像头还没打开，弹窗已经关了
+        stream.getTracks().forEach(t => t.stop());
+        return;
+    }
+    scannerStream = stream;
+    scannerVideo.srcObject = scannerStream;
+    const settings = scannerStream.getVideoTracks()[0].getSettings();
+    scannerPrefs.deviceId = settings.deviceId || deviceId || "";
+    saveScannerPrefs();
+    scannerInfo.textContent = settings.width ? `${settings.width}×${settings.height}` : "";
+    scannerShotBtn.disabled = false;
+    scannerContent.focus();
+}
+
+async function listScannerCameras() {
+    const cameras = (await mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+    scannerSelect.innerHTML = "";
+    cameras.forEach((camera, index) => {
+        const option = document.createElement("option");
+        option.value = camera.deviceId;
+        option.textContent = camera.label || `摄像头 ${index + 1}`;
+        scannerSelect.appendChild(option);
+    });
+    return cameras;
+}
+
+async function openScanner() {
+    scannerModal.hidden = false;
+    scannerShots = scannerPending = scannerQuestions = 0;
+    updateScannerStatus();
+    applyScannerRotation();
+    scannerContent.focus();
+    const wanted = scannerPrefs.deviceId;
+    try {
+        // 先拿一次权限，枚举出来的设备才有名字
+        await openScannerCamera(wanted);
+        const cameras = await listScannerCameras();
+        const remembered = wanted && cameras.some(c => c.deviceId === wanted);
+        const czur = cameras.find(c => /CZUR|成者|极匠/i.test(c.label));
+        if (!remembered && czur && czur.deviceId !== scannerPrefs.deviceId && !scannerModal.hidden) {
+            // 第一次用：笔记本自带摄像头往往排在前面，优先换到高拍仪
+            await openScannerCamera(czur.deviceId);
+        }
+        scannerSelect.value = scannerPrefs.deviceId;
+    } catch (error) {
+        scannerInfo.textContent = "";
+        const name = error && error.name;
+        updateScannerStatus(
+            name === "NotAllowedError" ? "浏览器没有获得摄像头权限，请在地址栏左侧允许后重试"
+            : name === "NotFoundError" ? "没有找到摄像头，请检查高拍仪的数据线，换个 USB 口试试"
+            : name === "NotReadableError" ? "摄像头被占用，请先关掉成者客户端或其他用摄像头的程序"
+            : "打开高拍仪失败：" + ((error && error.message) || error)
+        );
+    }
+}
+
+function closeScanner() {
+    stopScannerStream();
+    scannerModal.hidden = true;
+    if (scannerShots) {
+        showMsg(scannerPending ? "剩余几页还在切题，完成后会出现在本次重练" : `高拍仪共拍 ${scannerShots} 页，请勾选要重练的题`, true);
+    }
+}
+
+function applyScannerRotation() {
+    scannerVideo.style.transform = scannerPrefs.rotation ? `rotate(${scannerPrefs.rotation}deg)` : "";
+    scannerVideo.classList.toggle("sideways", scannerPrefs.rotation % 180 !== 0);
+}
+
+// 从视频流抓一帧，按当前旋转角度转正、缩到长边上限，编码成 JPEG
+function grabScannerFrame() {
+    const width = scannerVideo.videoWidth;
+    const height = scannerVideo.videoHeight;
+    if (!width || !height) return Promise.resolve(null);
+    const scale = Math.min(1, SCANNER_MAX_SIDE / Math.max(width, height));
+    const w = Math.round(width * scale);
+    const h = Math.round(height * scale);
+    const sideways = scannerPrefs.rotation % 180 !== 0;
+    const canvas = document.createElement("canvas");
+    canvas.width = sideways ? h : w;
+    canvas.height = sideways ? w : h;
+    const context = canvas.getContext("2d");
+    context.translate(canvas.width / 2, canvas.height / 2);
+    context.rotate((scannerPrefs.rotation * Math.PI) / 180);
+    context.drawImage(scannerVideo, -w / 2, -h / 2, w, h);
+    return new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.92));
+}
+
+async function scannerShoot() {
+    if (scannerShotBtn.disabled) return;
+    const blob = await grabScannerFrame();
+    if (!blob) return;
+    scannerShots += 1;
+    scannerPending += 1;
+    updateScannerStatus();
+    scannerVideo.classList.remove("flash");
+    void scannerVideo.offsetWidth;  // 重新触发闪一下的动画
+    scannerVideo.classList.add("flash");
+    const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+    // 一页一页排队上传：切题吃 CPU，并发上去只会更慢
+    scannerQueue = scannerQueue
+        .then(() => uploadPage(blob, `scanner-${stamp}-${scannerShots}.jpg`))
+        .then((count) => { scannerQuestions += count; scannerPending -= 1; updateScannerStatus(); })
+        .catch((error) => {
+            scannerPending -= 1;
+            if (scannerModal.hidden) showMsg(error.message, false);
+            else updateScannerStatus(error.message);
+        });
+}
+
+document.getElementById("scannerBtn").hidden = !mediaDevices?.getUserMedia;
+document.getElementById("scannerBtn").onclick = openScanner;
+document.getElementById("scannerDoneBtn").onclick = closeScanner;
+scannerShotBtn.onclick = scannerShoot;
+scannerSelect.onchange = () => {
+    openScannerCamera(scannerSelect.value).catch(e => updateScannerStatus("切换摄像头失败：" + e.message));
+};
+document.getElementById("scannerRotateBtn").onclick = () => {
+    scannerPrefs.rotation = (scannerPrefs.rotation + 90) % 360;
+    saveScannerPrefs();
+    applyScannerRotation();
+};
+// 空格 = 拍这一页，不管焦点停在哪个按钮上（按钮的空格默认在 keyup 时触发，一并拦掉）
+const isScannerSpace = event => event.code === "Space" && event.target.tagName !== "SELECT";
+scannerModal.onkeydown = (event) => {
+    if (isScannerSpace(event)) {
+        event.preventDefault();
+        if (!event.repeat) scannerShoot();
+    } else if (event.key === "Escape") {
+        closeScanner();
+    }
+};
+scannerModal.onkeyup = (event) => { if (isScannerSpace(event)) event.preventDefault(); };
 
 document.getElementById("editSaveBtn").onclick = () => {
     fetch("/api/questions/" + editingId, {

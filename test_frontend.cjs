@@ -57,3 +57,8 @@ test('print scope never falls back to entire library for missing or empty select
         assert.equal(h.elements.get('rangeFilter').hidden, true);
     }
 });
+
+test('scanner button stays hidden where the browser offers no camera API (phone over LAN http)', () => {
+    const h = harness(app);
+    assert.equal(h.elements.get('scannerBtn').hidden, true);
+});

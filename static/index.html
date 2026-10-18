@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Second Chance</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261014-flow">
+    <link rel="stylesheet" href="/static/style.css?v=20261018-scanner">
 </head>
 <body>
     <header>
@@ -20,6 +20,9 @@
                 <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
                 <button type="button" id="pickPhotoBtn" class="btn btn-primary btn-large">
                     📷 拍照 / 选择照片
+                </button>
+                <button type="button" id="scannerBtn" class="btn btn-large" hidden>
+                    🖨️ 用高拍仪拍
                 </button>
                 <div id="photoPreview" class="photo-preview" hidden>
                     <img id="previewImg" alt="预览">
@@ -106,6 +109,25 @@
         </div>
     </div>
 
+    <!-- 高拍仪连拍：浏览器把高拍仪当普通摄像头用（需 localhost 或 HTTPS） -->
+    <div id="scannerModal" class="modal" hidden>
+        <div id="scannerContent" class="modal-content scanner-content" tabindex="-1">
+            <h3>高拍仪</h3>
+            <p class="hint">作业放在黑色软垫上、字朝上。每换一页点一次 <b>拍这一页</b>（或按空格），拍完点 <b>完成</b>。</p>
+            <div class="scanner-toolbar">
+                <select id="scannerSelect" aria-label="选择摄像头"></select>
+                <button type="button" id="scannerRotateBtn" class="btn btn-small">↻ 旋转画面</button>
+                <span id="scannerInfo" class="scanner-info"></span>
+            </div>
+            <div class="scanner-stage"><video id="scannerVideo" autoplay muted playsinline></video></div>
+            <p id="scannerStatus" class="scanner-status" aria-live="polite"></p>
+            <div class="modal-actions">
+                <button type="button" id="scannerDoneBtn" class="btn">完成</button>
+                <button type="button" id="scannerShotBtn" class="btn btn-primary btn-large" disabled>拍这一页</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 大图查看 -->
     <div id="lightbox" class="modal" hidden>
         <div class="lightbox-content">
@@ -114,6 +136,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20261018-name"></script>
+    <script src="/static/app.js?v=20261018-scanner"></script>
 </body>
 </html>
