@@ -103,7 +103,7 @@ def ensure_schema(target_engine) -> None:
 
 ensure_schema(engine)
 
-app = FastAPI(title="温故")
+app = FastAPI(title="Second Chance")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 

@@ -1,4 +1,4 @@
-# seconddraft · 温故而知新
+# Second Chance · 温故而知新
 
 拍作业 · 勾选本次重练的题 · 预览并打印
 
@@ -25,10 +25,10 @@ python -m uvicorn app:app --port 8010
 首次开放需放行防火墙 8010 端口（管理员运行）：
 
 ```bat
-netsh advfirewall firewall add rule name="SecondDraft-8010" dir=in action=allow protocol=TCP localport=8010
+netsh advfirewall firewall add rule name="SecondChance-8010" dir=in action=allow protocol=TCP localport=8010
 ```
 
-> 注意：同一 Wi-Fi 下的所有设备都能访问温故（未加口令），家庭网络请自行评估。
+> 注意：同一 Wi-Fi 下的所有设备都能访问本服务（未加口令），家庭网络请自行评估。
 
 ## 使用流程
 
