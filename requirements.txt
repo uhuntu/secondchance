@@ -6,3 +6,9 @@ opencv-python-headless
 Pillow
 pillow-heif
 httpx
+# OCR 题号定位（ocr_split.py）；CPU 跑，首次加载模型约几秒
+rapidocr-onnxruntime
+onnxruntime
+pyclipper
+shapely
+PyYAML

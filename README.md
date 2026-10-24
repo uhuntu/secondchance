@@ -70,13 +70,23 @@ netsh advfirewall firewall add rule name="SecondChance-8010" dir=in action=allow
 
 老师还会用圈叉、划波浪线、在旁边写批注。9 月连续三次"加了 AI / 红叉自动切题又删掉"就是撞在这上面。
 
-**现在的做法**：机器只猜"题目之间的空白带"（这个信号比红叉可靠得多），
+**现在的做法**：机器从两个信号猜题目边界。一是"题目之间的空白带"（比红叉可靠得多）；二是 OCR 找**顶格的题号行**（"5." "三、"）——题号新起一行的地方必然是题界，行距宽窄、红笔、手写挤占空隙都影响不到它。两个信号取并集，OCR 失败时自动退回纯几何。
 
 猜错了拖一下就行。猜漏一道题 = 补一条线；猜错一道题 = 删掉多余的分界。**两种错都只值一次点击。**
 
 **为什么没有"待确认"状态？** 之前错题录进去不算确认就不进练习卷，
 
 结果就是"录了但忘了确认 = 白录"。现在题目保存后即可选入练习卷，没有额外的入库确认步骤；本次打印哪些题由勾选决定。
+
+## AI 题界理解（可选增强）
+
+在 `api_key.txt` 放一个火山方舟 API Key（或设环境变量 `ARK_API_KEY`），切题时会额外让
+豆包视觉模型指出每道题第一行的位置（语义理解），OCR 负责把这句话对准到像素上。
+AI 成功时，题内的废线会被自动丢弃；AI 失败/未配置时自动退回纯几何 + OCR，不影响使用。
+
+- 默认走 Agent Plan 网关 `/api/plan/v3` + `doubao-seed-2-1-pro`（已关深度思考，约 10s/页）；平台 key 或其他模型用环境变量 `ARK_MODEL` / `ARK_BASE_URL` 覆盖；
+- 每页照片会发送到火山引擎云端（家庭作业照片，介意隐私可不配置）；
+- 费用：flash 档模型，单页照片约千级 token，成本可忽略。
 
 ## 注意事项
 
@@ -106,13 +116,19 @@ app.py               FastAPI 路由与业务逻辑（上传、切题、遮挡、
 database.py          SQLAlchemy 引擎 / 会话 / 幂等加列迁移
 models.py            Question 表结构
 image_processing.py  页面放平 + 空白带分割线建议 + 按线切片
+ocr_split.py         OCR 定位顶格题号行，与几何切线合并
+ai_split.py          视觉大模型理解题界，OCR 负责像素定位
 static/              前端（index.html 主界面、paper.html 练习卷、app.js、style.css）
 backup.py            题库 + 照片打包快照
 test_api.py          端到端 API 自测
 test_app.py          文件生命周期 / 迁移 / 切题的单元测试
 test_image_processing.py  图像处理单元测试
+test_ocr_split.py    题号模式与切线合并的单元测试
+test_ai_split.py     AI 题界理解与合并降级的单元测试
 ```
 
 ## 技术栈
 
-FastAPI · SQLAlchemy · SQLite · OpenCV · Pillow · 原生 HTML/CSS/JS
+FastAPI · SQLAlchemy · SQLite · OpenCV · Pillow · RapidOCR（CPU，题号定位） · 豆包视觉模型（可选，题界理解） · 原生 HTML/CSS/JS
+
+> OCR 只在首次用到时加载模型（几秒）；没装 RapidOCR 也能跑，切题退回纯空白带检测。

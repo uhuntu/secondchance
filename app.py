@@ -12,6 +12,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from database import Base, add_column_if_missing, engine, get_db
+import ai_split
 from image_processing import (
     analyze,
     crop_by_lines,
@@ -310,10 +311,10 @@ def _create_page(
         analysis = analyze(raw_path)
         if page_points is not None:
             image = warp_with_corners(analysis.image, page_points)
-            lines = suggest_split_lines(image)
+            lines = ai_split.merged_lines(image, suggest_split_lines(image))
         else:
             image = analysis.image
-            lines = analysis.lines
+            lines = ai_split.merged_lines(image, analysis.lines)
         page_detected = analysis.page_detected
         lines = _validate_lines(lines, image.shape[0])
         page_path = _save_page(image, stem)
@@ -423,7 +424,7 @@ def straighten_question(
         straightened = warp_with_corners(raw, payload.points)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    lines = suggest_split_lines(straightened)
+    lines = ai_split.merged_lines(straightened, suggest_split_lines(straightened))
     _validate_lines(lines, straightened.shape[0])
     # 先写新图再删旧图：中途失败也不会把这一组的原图弄丢。
     new_path = _save_page(straightened, f"{page_path.stem}_m{uuid.uuid4().hex[:8]}")
@@ -460,7 +461,11 @@ def suggest_question(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        return {"lines": _validate_lines(suggest_split_lines(image), image.shape[0])}
+        return {
+            "lines": _validate_lines(
+                ai_split.merged_lines(image, suggest_split_lines(image)), image.shape[0]
+            )
+        }
     except HTTPException:
         # 建议线不合法（贴边/太密）时宁可不给，也不要给一堆废线。
         return {"lines": []}
