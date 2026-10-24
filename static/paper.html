@@ -158,12 +158,14 @@
         function selectedQuestions() {
             const kp = kpFilter.value;
             const cutoff = days > 0 ? Date.now() - days * 86400000 : 0;
-            return allQuestions.filter((q) => {
+            const picked = allQuestions.filter((q) => {
                 if (draftIds && !draftIds.has(q.id)) return false;
                 if (kp && (q.knowledge_point || "未分类错题") !== kp) return false;
                 if (cutoff && new Date(q.created_at).getTime() < cutoff) return false;
                 return true;
             });
+            // 练习卷按阅读顺序拼：整页按扫描先后（id 单调递增），页内从上到下
+            return picked.sort((a, b) => a.id - b.id);
         }
 
         function refreshFilters() {

@@ -201,6 +201,39 @@ def test_import_page_splits_into_ready_to_use_questions(api):
         db.close()
 
 
+def test_delete_page_removes_group_and_source(api):
+    """整页删除：同组全部题、所有切片和整页原图一起消失。"""
+    payload = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    questions = payload["questions"]
+    assert len(questions) >= 2
+    source_url = questions[0]["source_image_url"]
+
+    first = api.client.get(questions[0]["image_url"])
+    assert first.status_code == 200
+    page_file = api.uploads / source_url.rsplit("/", 1)[-1]
+    assert page_file.is_file()
+
+    assert api.client.delete(f"/api/questions/{questions[0]['id']}/page").status_code == 204
+    assert api.client.get(f"/api/questions/{questions[0]['id']}").status_code == 404
+    remaining = api.client.get("/api/questions").json()
+    assert all(q["source_image_url"] != source_url for q in remaining)
+    assert not list(api.uploads.glob(f"{page_file.stem}*"))
+    # 入参换成组内任何一道题，结果一致
+    payload2 = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page2.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    last = payload2["questions"][-1]
+    assert api.client.delete(f"/api/questions/{last['id']}/page").status_code == 204
+    assert all(q["source_image_url"] != payload2["questions"][0]["source_image_url"]
+               for q in api.client.get("/api/questions").json())
+
+
 def test_split_endpoint_recuts_the_same_page(api):
     """拖动分割线重新切题：题目数量跟着变，整页原图保留。"""
     payload = api.client.post(

@@ -129,7 +129,8 @@ function renderList(list) {
         actions.className = "worksheet-actions";
         if (representative.source_image_url) {
             actions.append(
-                smallButton("看整页", () => openLightbox(representative.source_image_url))
+                smallButton("看整页", () => openLightbox(representative.source_image_url)),
+                smallButton(`删除整页（${items.length} 题）`, () => deletePage(items))
             );
         }
         header.append(heading, actions);
@@ -264,6 +265,21 @@ function deleteQuestion(id) {
             else showMsg("删除失败", false);
         })
         .catch(() => showMsg("删除失败", false));
+}
+
+function deletePage(items) {
+    const count = items.length;
+    if (!confirm(`确定删除这一页的全部 ${count} 道题吗？整页原图和所有切片会一并删除。`)) return;
+    fetch(`/api/questions/${items[0].id}/page`, { method: "DELETE" })
+        .then((r) => {
+            if (r.ok) {
+                showMsg(`已删除整页 ${count} 道题`, true);
+                refresh();
+            } else {
+                showMsg("删除整页失败", false);
+            }
+        })
+        .catch(() => showMsg("删除整页失败", false));
 }
 
 function refresh() {

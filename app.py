@@ -256,7 +256,17 @@ def list_questions(
         query = query.filter(
             or_(Question.knowledge_point.like(like), Question.note.like(like))
         )
-    questions = query.order_by(Question.created_at.desc()).all()
+    rows = query.order_by(Question.id.asc()).all()
+    # 同一页的题是同一瞬间批量入库的（Windows 时钟粒度下 created_at 甚至
+    # 完全相同），按 created_at 倒序会把页内排成从下往上。改成"整页为单位"：
+    # 组内 id 升序（= 切片从上到下），组间按组内最大 id 倒序（= 越新创建的
+    # 页越靠上）。id 单调递增，不依赖时间戳精度。
+    groups: dict[str, list[Question]] = {}
+    for q in rows:
+        groups.setdefault(q.source_image_path or f"single:{q.id}", []).append(q)
+    questions: list[Question] = []
+    for key in sorted(groups, key=lambda k: max(q.id for q in groups[k]), reverse=True):
+        questions.extend(groups[key])
     return [question_to_dict(q) for q in questions]
 
 
@@ -591,6 +601,25 @@ def delete_question(question_id: int, db: Session = Depends(get_db)):
         )
         if not still_used:
             _delete_file(_resolve_upload(source_path))
+
+
+@app.delete("/api/questions/{question_id}/page", status_code=204)
+def delete_question_page(question_id: int, db: Session = Depends(get_db)):
+    """整页删除：同一页的全部题、所有切片和共享的整页原图一起删。
+
+    页以 source_image_path 圈定；单图直传的题没有整页，退化为普通单题删除。
+    """
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    source_name = question.source_image_path
+    group = _group_of(db, source_name) if source_name else [question]
+    for item in group:
+        _delete_file(_resolve_upload(item.image_path))
+        db.delete(item)
+    db.commit()
+    if source_name:
+        _delete_file(_resolve_upload(source_name))
 
 
 @app.get("/uploads/{filename}")
