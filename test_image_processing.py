@@ -9,6 +9,7 @@ from PIL import Image
 from image_processing import (
     analyze,
     crop_by_lines,
+    remove_handwriting,
     heic_to_jpeg_bytes,
     straighten,
     suggest_split_lines,
@@ -70,6 +71,53 @@ def test_straighten_falls_back_to_original_when_paper_is_ambiguous():
     result, detected = straighten(flat)
     assert detected is False
     assert result.shape == flat.shape
+
+
+def test_remove_handwriting_drops_pencil_and_red_keeps_print():
+    """铅笔和红笔被填回纸色，印刷体一个像素不少。
+
+    线画到 200（约半行宽）为止：真实文字行的墨水不会占满整行，
+    占满了会把"该行纸面亮度"的中位数拖成墨水色，参照系就失真了。
+    """
+    page = np.full((600, 400, 3), 245, dtype=np.uint8)
+    for y in range(60, 120, 20):                     # 印刷体：深黑横线
+        cv2.line(page, (40, y), (200, y), (30, 30, 30), 3)
+    for y in range(200, 260, 20):                    # 铅笔：中灰横线
+        cv2.line(page, (40, y), (200, y), (150, 150, 150), 3)
+    cv2.circle(page, (200, 350), 40, (60, 60, 230), 5)  # 红笔圈
+
+    cleaned = remove_handwriting(page)
+
+    # 印刷体还在（采样一条印刷横线的中心）
+    assert cleaned[60, 100, 0] < 80
+    # 铅笔线中心被填回纸色
+    assert cleaned[200, 100, 0] > 220
+    # 红圈中心被填回纸色（三个通道都到纸色，不再是红笔的"蓝低红高"）
+    assert cleaned[350, 200, 0] > 200 and abs(int(cleaned[350, 200, 2]) - int(cleaned[350, 200, 0])) < 30
+
+
+def test_remove_handwriting_keeps_red_on_text_removes_red_in_blank():
+    """红笔压着印刷文字时保留（否则题目被毁）；空白处的红笔涂鸦移除。"""
+    page = np.full((600, 400, 3), 245, dtype=np.uint8)
+    cv2.line(page, (40, 100), (200, 100), (30, 30, 30), 3)   # 印刷文字行
+    cv2.line(page, (40, 104), (200, 104), (60, 60, 230), 3)  # 红杠紧贴文字
+    cv2.line(page, (40, 400), (200, 400), (60, 60, 230), 3)  # 红杠在空白处
+
+    cleaned = remove_handwriting(page)
+
+    # 贴着文字的红杠保留（红通道明显高于蓝通道）
+    assert cleaned[104, 100, 2] - cleaned[104, 100, 0] > 60
+    # 空白处的红杠被填回纸色
+    assert cleaned[400, 100, 0] > 200
+
+
+def test_remove_handwriting_skips_pages_without_handwriting():
+    """只有印刷的页面：找不到可去的铅笔，原样返回（不误删）。"""
+    page = np.full((600, 400, 3), 245, dtype=np.uint8)
+    for y in range(60, 500, 20):
+        cv2.line(page, (40, y), (200, y), (30, 30, 30), 3)
+    cleaned = remove_handwriting(page)
+    assert np.array_equal(cleaned, page)
 
 
 def test_warp_with_corners_rejects_points_outside_the_photo():

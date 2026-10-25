@@ -422,12 +422,15 @@ def suggest_split_lines(image: np.ndarray | Path | str) -> list[int]:
 
 
 def remove_handwriting(image: np.ndarray) -> np.ndarray:
-    """去掉铅笔手写与红笔批注，保留印刷内容，返回新图（不改原图）。
+    """去掉铅笔手写与游离的红笔涂鸦，保留印刷内容，返回新图（不改原图）。
 
-    印刷体明显深于铅笔字：按行取纸面亮度做参照算"墨水深度"，深度
-    直方图双峰时用 Otsu 找分界，浅的一类（含红笔，色域排除）填回
-    纸色。分界不落在合理区间、或浅类占比太小/太大时，判定这一页
-    没有可去的手写，原样返回——宁可去不掉，不能误删印刷。
+    红笔分两类：压在印刷文字上的（勾、划、圈着答案）保留——红墨是
+    不透明的，填掉它连文字一起消失，留下大白疤；写在空白处的（页首
+    分数、大杠）按色域移除。印刷体明显深于铅笔字：按行取纸面亮度做
+    参照算"墨水深度"，深度直方图双峰时用 Otsu 找分界，浅的一类
+    （铅笔）填回纸色。分界不落在合理区间、或浅类占比太小/太大时，
+    判定这一页没有可去的铅笔手写，红笔照上、铅笔保留——宁可去不掉，
+    不能误删印刷。
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -444,29 +447,42 @@ def remove_handwriting(image: np.ndarray) -> np.ndarray:
         (reference[:, None] - gray.astype(np.float32)) / np.maximum(reference[:, None], 1),
         0, 1,
     )
-    ink = (darkness > 0.15) & mask & ~red
-    values = darkness[ink]
-    if values.size < 500:
-        return image
-    threshold, _ = cv2.threshold(
-        (values * 255).astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
-    threshold /= 255.0
-    # 分界要落在"铅笔浅、印刷深"的合理区间，浅类占比也要像话，否则
-    # 说明这一页没有可去的手写（或对比度不对），硬分只会误删印刷。
-    if not (0.30 <= threshold <= 0.72):
-        return image
-    light_fraction = float((values < threshold).mean())
-    if not (0.01 <= light_fraction <= 0.70):
-        return image
+    # 之后的比较全部在 0-255 整数空间做：cv2 的 Otsu 在整数直方图上选
+    # 阈值，浮点比较会差一个量化 bin（清晰扫描只有铅笔/印刷两级灰度
+    # 时必踩）。红笔不算墨水（不参与铅笔/印刷的分界统计），但它本身
+    # 要被填掉——包括压在文字上的：那些文字已被不透明的红墨盖住，
+    # 填掉后留下的空白是照片里本来就没有信息的地方。
+    darkness_u8 = (darkness * 255).astype(np.uint8)
+    ink = (darkness_u8 > 38) & mask & ~red
+    handwriting = red & mask
 
-    handwriting = ink & (darkness < threshold)
+    values = darkness_u8[ink]
+    if values.size >= 500:
+        threshold, _ = cv2.threshold(values, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # 分界要落在"铅笔浅、印刷深"的合理区间，浅类占比也要像话，否则
+        # 说明这一页没有可去的铅笔手写（或对比度不对），硬分只会误删印刷。
+        if 76 <= threshold <= 184 and 0.01 <= float((values <= threshold).mean()) <= 0.70:
+            handwriting |= ink & (darkness_u8 <= threshold)
+
+    if not handwriting.any():
+        return image
+    # 红笔里压着印刷文字的部分保留（红墨不透明，填掉它连题目文字一起
+    # 消失，重练卷上这道题就没法做了）；只删空白处的涂鸦。铅笔不受
+    # 此限——孩子的答案本来就要清掉。
+    dark_print = (ink & (darkness_u8 > 150)).astype(np.uint8)
+    text_zone = cv2.dilate(dark_print, np.ones((9, 9), np.uint8)).astype(bool)
+    over_text = red & text_zone
+    handwriting = handwriting & ~over_text
+
     handwriting = cv2.dilate(
         handwriting.astype(np.uint8), np.ones((3, 3), np.uint8)
-    ).astype(bool)  # 连铅笔字的抗锯齿边一起填掉
+    ).astype(bool)  # 连笔画的抗锯齿边一起填掉
+    # 红笔被保留的部分不参与膨胀填充，原样并回去
+    keep_red = red & text_zone & ~handwriting
     fill = np.clip(reference, 0, 255).astype(np.uint8)[:, None].repeat(3, axis=1)
     result = image.copy()
     result[handwriting] = fill[np.where(handwriting)[0]]
+    result[keep_red] = image[keep_red]
     return result
 
 
