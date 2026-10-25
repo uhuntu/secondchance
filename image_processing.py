@@ -421,7 +421,9 @@ def suggest_split_lines(image: np.ndarray | Path | str) -> list[int]:
     return lines
 
 
-def remove_handwriting(image: np.ndarray) -> np.ndarray:
+def remove_handwriting(
+    image: np.ndarray, extra_regions: list[list[int]] | None = None
+) -> np.ndarray:
     """去掉铅笔手写与游离的红笔涂鸦，保留印刷内容，返回新图（不改原图）。
 
     红笔分两类：压在印刷文字上的（勾、划、圈着答案）保留——红墨是
@@ -463,6 +465,18 @@ def remove_handwriting(image: np.ndarray) -> np.ndarray:
         # 说明这一页没有可去的铅笔手写（或对比度不对），硬分只会误删印刷。
         if 76 <= threshold <= 184 and 0.01 <= float((values <= threshold).mean()) <= 0.70:
             handwriting |= ink & (darkness_u8 <= threshold)
+
+    if extra_regions:
+        # AI 圈定的手写痕迹框：框内所有墨水（含深色钢笔/重铅笔）都算
+        # 手写清掉——亮度分不开的深笔迹靠这一步。印刷体靠框的精度保证，
+        # 框歪了宁可多留一点痕迹，也不能把题目文字抹了。
+        box_mask = np.zeros_like(handwriting)
+        for x1, y1, x2, y2 in extra_regions:
+            x1, x2 = sorted((max(0, x1), min(image.shape[1], x2)))
+            y1, y2 = sorted((max(0, y1), min(image.shape[0], y2)))
+            if x2 > x1 and y2 > y1:
+                box_mask[y1:y2, x1:x2] = True
+        handwriting |= box_mask & (darkness_u8 > 38) & mask & ~red
 
     if not handwriting.any():
         return image

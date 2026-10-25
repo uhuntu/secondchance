@@ -5,15 +5,28 @@ import ocr_split
 
 
 def test_parse_markers():
-    fenced = '```json\n[{"marker": "2.", "text": "（北京市·东城区）", "wrong": true}, {"marker": "3.", "text": "线面是福建省", "wrong": false}]\n```'
-    assert ai_split._parse_markers(fenced) == [
-        {"text": "2.（北京市·东城区）", "wrong": True},
-        {"text": "3.线面是福建省", "wrong": False},
-    ]
-    assert ai_split._parse_markers('废话 [ {"marker": "5.", "text": "（龙岩市"} ] 废话') == [
-        {"text": "5.（龙岩市", "wrong": None}
-    ]
-    assert ai_split._parse_markers('["1.第一题"]') == [{"text": "1.第一题", "wrong": None}]
+    fenced = (
+        '```json\n{"questions": ['
+        '{"marker": "2.", "text": "（北京市·东城区）", "wrong": true}, '
+        '{"marker": "3.", "text": "线面是福建省", "wrong": false}], '
+        '"handwriting": [{"box": [10, 20, 300, 120]}]}\n```'
+    )
+    assert ai_split._parse_markers(fenced) == (
+        [
+            {"text": "2.（北京市·东城区）", "wrong": True},
+            {"text": "3.线面是福建省", "wrong": False},
+        ],
+        [[10, 20, 300, 120]],
+    )
+    # 旧格式（裸数组，没有手写框）兼容
+    assert ai_split._parse_markers('废话 [ {"marker": "5.", "text": "（龙岩市"} ] 废话') == (
+        [{"text": "5.（龙岩市", "wrong": None}],
+        [],
+    )
+    assert ai_split._parse_markers('["1.第一题"]') == (
+        [{"text": "1.第一题", "wrong": None}],
+        [],
+    )
     assert ai_split._parse_markers("没有数组") is None
     assert ai_split._parse_markers("[{broken json]") is None
     assert ai_split._parse_markers("") is None
@@ -22,18 +35,24 @@ def test_parse_markers():
 def test_parse_markers_drops_section_headers():
     """模型显式标注 section 的章节标题不是题界，直接丢弃。"""
     content = (
-        '[{"marker": "一、", "text": "精心选择。", "section": true, "wrong": null},'
+        '{"questions": ['
+        '{"marker": "一、", "text": "精心选择。", "section": true, "wrong": null},'
         '{"marker": "1.", "text": "3.66÷0.32", "section": false, "wrong": true},'
-        '{"marker": "2.", "text": "(北京市·东", "section": false, "wrong": false}]'
+        '{"marker": "2.", "text": "(北京市·东", "section": false, "wrong": false}],'
+        '"handwriting": []}'
     )
-    assert ai_split._parse_markers(content) == [
-        {"text": "1.3.66÷0.32", "wrong": True},
-        {"text": "2.(北京市·东", "wrong": False},
-    ]
+    assert ai_split._parse_markers(content) == (
+        [
+            {"text": "1.3.66÷0.32", "wrong": True},
+            {"text": "2.(北京市·东", "wrong": False},
+        ],
+        [],
+    )
     # 旧格式（没有 section 字段）照常保留
-    assert ai_split._parse_markers('[{"marker": "5.", "text": "（龙岩市"}]') == [
-        {"text": "5.（龙岩市", "wrong": None}
-    ]
+    assert ai_split._parse_markers('[{"marker": "5.", "text": "（龙岩市"}]') == (
+        [{"text": "5.（龙岩市", "wrong": None}],
+        [],
+    )
 
 
 def _strips() -> list[tuple[int, int, str, float]]:
@@ -79,6 +98,20 @@ def test_match_markers_skips_unmatched():
     assert starts == []
 
 
+def test_boxes_per_crop_splits_and_shifts():
+    # 页高 1000，线 [300, 700] → 三片 [0,300] [300,700] [700,1000]
+    boxes = [[50, 100, 200, 250], [100, 250, 300, 400], [400, 950, 500, 990]]
+    per_crop = ai_split.boxes_per_crop(boxes, [300, 700], 1000, skip_first=False)
+    # 框 0 整在第一片；框 1 跨 300 边界，两片各留裁剪后的部分
+    assert per_crop[0] == [[50, 100, 200, 250], [100, 250, 300, 300]]
+    assert per_crop[1] == [[100, 0, 300, 100]]
+    assert per_crop[2] == [[400, 250, 500, 290]]
+    # skip_first：第一片丢弃，框随编号前移
+    per_crop2 = ai_split.boxes_per_crop(boxes, [300, 700], 1000, skip_first=True)
+    assert per_crop2[0] == [[100, 0, 300, 100]]
+    assert per_crop2[1] == [[400, 250, 500, 290]]
+
+
 def _page_with_gaps(height: int = 1200, width: int = 800) -> np.ndarray:
     import cv2
 
@@ -98,17 +131,21 @@ def test_merged_lines_with_ai_drops_junk_inside_spans(monkeypatch):
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: strips)
     monkeypatch.setattr(
         ai_split, "ai_markers",
-        lambda img: [
-            {"text": "一、第一块", "wrong": True},
-            {"text": "1.第二块", "wrong": False},
-            {"text": "2.第三块", "wrong": True},
-        ],
+        lambda img: (
+            [
+                {"text": "一、第一块", "wrong": True},
+                {"text": "1.第二块", "wrong": False},
+                {"text": "2.第三块", "wrong": True},
+            ],
+            [],  # 无手写框
+        ),
     )
-    lines, ai_active, wrong_flags = ai_split.split_plan(image, geometric)
+    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, geometric)
     # 几何线全部让位给 AI 题界：3 道题 3 条线，调用方丢弃第一片（页眉）
     assert ai_active is True
     assert len(lines) == 3
     assert wrong_flags == [True, False, True]
+    assert hw_boxes == []
     assert lines[0] < 120 and 300 < lines[1] < 440 and 640 < lines[2] < 780
     assert ai_split.merged_lines(image, geometric) == lines
 
@@ -121,8 +158,8 @@ def test_split_plan_without_ai_keeps_geometric_union(monkeypatch):
     strips = [(84, 80, "1.第一块", 0.9)]
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: strips)
     monkeypatch.setattr(ai_split, "ai_markers", lambda img: None)
-    lines, ai_active, wrong_flags = ai_split.split_plan(image, geometric)
-    assert ai_active is False and wrong_flags == []
+    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, geometric)
+    assert ai_active is False and wrong_flags == [] and hw_boxes == []
     assert lines == ocr_split.merged_lines(image, geometric)
 
 
@@ -134,8 +171,8 @@ def test_merged_lines_degrades_without_api_key(monkeypatch):
     monkeypatch.setattr(ai_split, "_api_key", lambda: None)
     assert ai_split.ai_markers(image) is None
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: [])
-    lines, ai_active, wrong_flags = ai_split.split_plan(image, geometric)
-    assert ai_active is False and wrong_flags == []
+    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, geometric)
+    assert ai_active is False and wrong_flags == [] and hw_boxes == []
     assert lines == ocr_split.merged_lines(image, geometric)
 
 

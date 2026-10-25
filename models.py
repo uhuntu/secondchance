@@ -32,6 +32,7 @@ class Question(Base):
     answer_masks = Column(Text, default="")       # 练习卷答案遮挡区域（JSON）
     crop_reviewed = Column(Boolean, nullable=False, default=False)  # 已在"确认错题切割"里人工确认
     suspected_wrong = Column(Boolean, nullable=False, default=False)  # AI 判定的疑似错题（仅建议）
+    ink_boxes = Column(Text, nullable=False, default="[]")  # 本切片内的手写痕迹框（切片内坐标，JSON）
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), index=True
     )

@@ -202,7 +202,7 @@
                     masks = [];
                 }
                 // cv 参数随算法升级换版本，避免浏览器拿旧的去手写结果
-                const image = cleanMode ? `${q.image_url}${q.image_url.includes("?") ? "&" : "?"}clean=1&cv=20261025b` : q.image_url;
+                const image = cleanMode ? `${q.image_url}${q.image_url.includes("?") ? "&" : "?"}clean=1&cv=20261025c` : q.image_url;
                 return { kp: q.knowledge_point || "未分类错题", image, masks };
             });
 

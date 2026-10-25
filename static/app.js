@@ -335,6 +335,7 @@ let splitQuestionRef = null;
 let splitImage = null;
 let splitLines = [];
 let splitSkipFirst = false;  // 第一段是页眉（AI 重新自动切后为真），保存时丢弃
+let splitBoxes = [];         // AI 标注的手写痕迹框（整页坐标），随保存透传
 let splitDragIndex = -1;
 let splitDragMoved = false;
 let splitChipsRendered = -1;
@@ -443,6 +444,7 @@ function openSplit(q) {
         .then((data) => {
             // 上次保存的切法原样还原（含"第一段是页眉"的标记）
             splitSkipFirst = !!data.skip_first;
+            splitBoxes = [];  // 旧切法没有 AI 手写框，重新自动切才会有
             splitLines = (data.lines || []).slice().sort((a, b) => a - b);
             const img = new Image();
             img.onload = () => {
@@ -531,6 +533,7 @@ function closeSplit() {
     splitQuestionRef = null;
     splitImage = null;
     splitLines = [];
+    splitBoxes = [];
     splitSkipFirst = false;
 }
 
@@ -549,6 +552,7 @@ document.getElementById("splitResetBtn").onclick = () => {
                 return;
             }
             splitSkipFirst = !!data.ai_active;
+            splitBoxes = Array.isArray(data.boxes) ? data.boxes : [];
             splitLines = data.lines.slice().sort((a, b) => a - b);
             drawSplit();
             const count = splitLines.length + 1 - (splitSkipFirst ? 1 : 0);
@@ -573,7 +577,7 @@ splitSaveBtn.onclick = async () => {
         const response = await fetch(`/api/questions/${splitQuestionRef.id}/split`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ lines: splitLines, skip_first: splitSkipFirst }),
+            body: JSON.stringify({ lines: splitLines, skip_first: splitSkipFirst, boxes: splitBoxes }),
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.detail || "保存切割结果失败");

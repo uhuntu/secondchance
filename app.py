@@ -75,6 +75,7 @@ def ensure_schema(target_engine) -> None:
         ("answer_masks", "TEXT DEFAULT ''"),
         ("crop_reviewed", "BOOLEAN NOT NULL DEFAULT 0"),
         ("suspected_wrong", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("ink_boxes", "TEXT DEFAULT '[]'"),
     ]:
         add_column_if_missing(target_engine, "questions", _col, _ddl)
     with target_engine.begin() as conn:
@@ -126,6 +127,7 @@ def question_to_dict(q: Question) -> dict:
         ),
         "crop_reviewed": bool(q.crop_reviewed),
         "suspected_wrong": bool(q.suspected_wrong),
+        "ink_boxes": q.ink_boxes or "[]",
         "answer_masks": q.answer_masks or "[]",
         "created_at": created_at.isoformat(),
     }
@@ -221,6 +223,7 @@ def _apply_split(
     crop_paths: list[Path],
     rename_group_from: str | None = None,
     wrong_flags: list[bool | None] | None = None,
+    ink_boxes: list[list[list[int]]] | None = None,
 ) -> list[Question]:
     """把一页的题目整体换成新的切片集合。
 
@@ -246,16 +249,20 @@ def _apply_split(
                 item.crop_reviewed = True
                 if wrong_flags is not None and index < len(wrong_flags):
                     item.suspected_wrong = bool(wrong_flags[index])
+                if ink_boxes is not None and index < len(ink_boxes):
+                    item.ink_boxes = json.dumps(ink_boxes[index])
             else:
                 db.delete(item)
         for index, crop_path in enumerate(crop_paths[len(group):]):
+            new_index = len(group) + index
             db.add(
                 Question(
                     subject=question.subject,
                     image_path=_stored_name(crop_path),
                     source_image_path=source_name,
                     crop_reviewed=True,
-                    suspected_wrong=bool(wrong_flags[len(group) + index]) if wrong_flags and len(wrong_flags) > len(group) + index else False,
+                    suspected_wrong=bool(wrong_flags[new_index]) if wrong_flags and len(wrong_flags) > new_index else False,
+                    ink_boxes=json.dumps(ink_boxes[new_index]) if ink_boxes and len(ink_boxes) > new_index else "[]",
                 )
             )
         db.commit()
@@ -355,14 +362,15 @@ def _create_page(
         analysis = analyze(raw_path)
         if page_points is not None:
             image = warp_with_corners(analysis.image, page_points)
-            lines, ai_active, wrong_flags = ai_split.split_plan(image, suggest_split_lines(image))
+            lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, suggest_split_lines(image))
         else:
             image = analysis.image
-            lines, ai_active, wrong_flags = ai_split.split_plan(image, analysis.lines)
+            lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, analysis.lines)
         page_detected = analysis.page_detected
         lines = _validate_lines(lines, image.shape[0])
         page_path = _save_page(image, stem)
         crop_paths = _split_into_crops(image, lines, stem, skip_first=ai_active)
+        ink_boxes_per_crop = ai_split.boxes_per_crop(hw_boxes, lines, image.shape[0], ai_active)
     except HTTPException:
         _delete_file(raw_path)
         raise
@@ -384,7 +392,10 @@ def _create_page(
     db.add(representative)
     try:
         db.flush()
-        questions = _apply_split(db, representative, source_name, crop_paths, wrong_flags=wrong_flags)
+        questions = _apply_split(
+            db, representative, source_name, crop_paths,
+            wrong_flags=wrong_flags, ink_boxes=ink_boxes_per_crop,
+        )
     except HTTPException:
         _delete_file(page_path)
         raise
@@ -417,6 +428,7 @@ async def import_page(
 class SplitRequest(BaseModel):
     lines: list[int]
     skip_first: bool = False  # 第一段是页眉（AI 重新自动切时会标记），保存时丢弃
+    boxes: list[list[int]] = []  # AI 标注的手写痕迹框（整页坐标，随重新自动切透传）
 
 
 class ManualStraighten(SplitRequest):
@@ -442,11 +454,16 @@ def split_question(
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
 
     lines = _validate_lines(payload.lines, image.shape[0])
+    ink_boxes_per_crop = ai_split.boxes_per_crop(
+        payload.boxes, lines, image.shape[0], payload.skip_first
+    )
     crop_paths = _split_into_crops(
         image, lines, f"{page_path.stem}_s{uuid.uuid4().hex[:8]}",
         skip_first=payload.skip_first,
     )
-    questions = _apply_split(db, question, source_name, crop_paths)
+    questions = _apply_split(
+        db, question, source_name, crop_paths, ink_boxes=ink_boxes_per_crop,
+    )
     _save_page_split(db, source_name, lines, payload.skip_first)
     return {"questions": [question_to_dict(q) for q in questions]}
 
@@ -474,7 +491,7 @@ def straighten_question(
         straightened = warp_with_corners(raw, payload.points)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    lines, ai_active, wrong_flags = ai_split.split_plan(straightened, suggest_split_lines(straightened))
+    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(straightened, suggest_split_lines(straightened))
     _validate_lines(lines, straightened.shape[0])
     # 先写新图再删旧图：中途失败也不会把这一组的原图弄丢。
     new_path = _save_page(straightened, f"{page_path.stem}_m{uuid.uuid4().hex[:8]}")
@@ -483,11 +500,13 @@ def straighten_question(
         straightened, lines, f"{new_path.stem}_s{uuid.uuid4().hex[:8]}",
         skip_first=ai_active,
     )
+    ink_boxes_per_crop = ai_split.boxes_per_crop(hw_boxes, lines, straightened.shape[0], ai_active)
     try:
         # 整组一起改指向新整页，否则 source_image_path 会指向已删除的旧文件。
         questions = _apply_split(
             db, question, new_name, crop_paths,
             rename_group_from=source_name, wrong_flags=wrong_flags,
+            ink_boxes=ink_boxes_per_crop,
         )
     except HTTPException:
         _delete_file(new_path)
@@ -520,16 +539,17 @@ def suggest_question(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        lines, ai_active, wrong_flags = ai_split.split_plan(
+        lines, ai_active, _wrong_flags, hw_boxes = ai_split.split_plan(
             image, suggest_split_lines(image)
         )
         return {
             "lines": _validate_lines(lines, image.shape[0]),
             "ai_active": ai_active,
+            "boxes": hw_boxes,
         }
     except HTTPException:
         # 建议线不合法（贴边/太密）时宁可不给，也不要给一堆废线。
-        return {"lines": [], "ai_active": False}
+        return {"lines": [], "ai_active": False, "boxes": []}
 
 
 @app.post("/api/questions/{question_id}/judge")
@@ -550,7 +570,7 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        lines, ai_active, wrong_flags = ai_split.split_plan(
+        lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(
             image, suggest_split_lines(image)
         )
     except HTTPException:
@@ -578,6 +598,15 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
             item.suspected_wrong = any(inside)
             if any(inside):
                 suspected += 1
+    # 顺带把 AI 的手写痕迹框按题存下来（练习卷去手写用）。
+    # 只在 AI 的题数和现存切片数一致时做，对不上的老页面请先重新自动切。
+    if len(lines) == len(group):
+        per_crop = ai_split.boxes_per_crop(
+            hw_boxes, lines, image.shape[0], skip_first=True
+        )
+        for index, item in enumerate(group):
+            if index < len(per_crop):
+                item.ink_boxes = json.dumps(per_crop[index])
     db.commit()
     return {"updated": True, "suspected": suspected, "ai_active": True}
 
@@ -730,7 +759,7 @@ def delete_question_page(question_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/uploads/{filename}")
-def get_upload(filename: str, clean: int = 0):
+def get_upload(filename: str, clean: int = 0, db: Session = Depends(get_db)):
     safe_name = Path(filename).name
     if safe_name != filename or not safe_name:
         raise HTTPException(400, "非法的文件名")
@@ -738,10 +767,17 @@ def get_upload(filename: str, clean: int = 0):
     if not file_path.is_file():
         raise HTTPException(404, "文件不存在")
     if clean:
-        # 练习卷的"去手写"模式：现场生成铅笔/红笔移除版，原图不动
+        # 练习卷的"去手写"模式：现场生成铅笔/红笔/深笔迹移除版，原图不动
         image = cv2.imread(str(file_path))
         if image is not None:
-            cleaned = remove_handwriting(image)
+            regions: list[list[int]] = []
+            row = db.query(Question).filter(Question.image_path == filename).first()
+            if row is not None:
+                try:
+                    regions = json.loads(row.ink_boxes or "[]")
+                except json.JSONDecodeError:
+                    regions = []
+            cleaned = remove_handwriting(image, extra_regions=regions)
             ok, buffer = cv2.imencode(".jpg", cleaned, [cv2.IMWRITE_JPEG_QUALITY, 92])
             if ok:
                 return Response(content=buffer.tobytes(), media_type="image/jpeg")

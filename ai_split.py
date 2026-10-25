@@ -41,12 +41,14 @@ PROMPT = (
     "以及没有编号但独立成题的行。页眉、学校名、页脚、分数、选项行（A. B. C.）不算。"
     "同时判断每道题孩子是否做错：看老师的批改痕迹（红叉、圈出错处、扣分），"
     "有明显错误痕迹填 true，批改是勾或没有痕迹、看不出来填 false。"
-    "只输出 JSON 数组，按从上到下顺序，每项形如 "
-    '{"marker": "题号原文", "text": "该行开头4到8个字，照抄照片原文，不要改写", '
-    '"section": 该行是否为章节标题（如「一、精心选择」「二、认真填写」这类只有题型说明、'
-    "下面还有 1. 2. 小题的行；是填 true，不是填 false), "
-    '"wrong": 该题是否做错（true/false)}。'
-    "不要输出任何其他内容。"
+    "再找出图里所有手写痕迹的位置：孩子用铅笔/钢笔/圆珠笔写的答案、算式、"
+    "文字、图形，以及老师用非红色笔写的批注；印刷体（题目、选项、图形、表格线）"
+    "不算。每个痕迹给一个包围盒，坐标相对整张图归一化到 0-999，格式 [左, 上, 右, 下]，"
+    "框要贴住痕迹本身。"
+    '只输出一个 JSON 对象：{"questions": [按从上到下顺序，每项 '
+    '{"marker": "题号原文", "text": "该行开头4到8个字，照抄照片原文", '
+    '"section": 是否章节标题(true/false), "wrong": 该题是否做错(true/false)}], '
+    '"handwriting": [{"box": [左, 上, 右, 下]}]}，不要输出任何其他内容。'
 )
 
 
@@ -66,19 +68,56 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", text or "")
 
 
-def _parse_markers(content: str) -> list[str] | None:
-    """从模型回复里抠出 JSON 数组，容忍 ```json 包裹和废话。"""
-    match = re.search(r"\[.*\]", content or "", re.S)
+def _repair_number_arrays(text: str) -> str:
+    """补回模型吞掉的逗号：手写框常被写成 [835 76 954 172] 甚至
+    [826 76, 954 175]（成对丢、混着丢），json 解析不了。
+
+    只动"纯数字 + 空白/逗号混合分隔"的数组，别的文本一概不碰。
+    """
+    return re.sub(
+        r"\[\s*-?\d+(?:[\s,]+-?\d+)+\s*\]",
+        lambda m: "[" + re.sub(r"[\s,]+", ",", m.group(0)[1:-1].strip()) + "]",
+        text,
+    )
+
+
+def _parse_markers(content: str) -> tuple[list[dict], list[list[int]]] | None:
+    """从模型回复里抠出题目列表和手写框，容忍 ```json 包裹和废话。
+
+    兼容两种响应：新格式是 {"questions": [...], "handwriting": [{"box": ...}]}，
+    旧格式是裸数组（没有手写框，框列表为空）。
+    """
+    match = re.search(r"\{.*\}|\[.*\]", content or "", re.S)
     if not match:
         return None
+    isinstance_markers_object = match.group(0).lstrip().startswith("{")
+    raw = _repair_number_arrays(match.group(0))
     try:
-        data = json.loads(match.group(0))
+        data = json.loads(raw)
     except json.JSONDecodeError:
-        return None
-    if not isinstance(data, list):
+        # 回复可能被 max_tokens 截断：丢掉末尾不完整的条目再试一次
+        cut = raw.rfind("}")
+        if cut <= 1:
+            return None
+        closer = "]}" if isinstance_markers_object else "]"
+        try:
+            data = json.loads(raw[:cut + 1] + closer)
+        except json.JSONDecodeError:
+            return None
+
+    items = data
+    hw_boxes: list[list[int]] = []
+    if isinstance(data, dict):
+        items = data.get("questions")
+        for entry in data.get("handwriting") or []:
+            if isinstance(entry, dict) and isinstance(entry.get("box"), list):
+                box = [int(round(v)) for v in entry["box"] if isinstance(v, (int, float))]
+                if len(box) == 4:
+                    hw_boxes.append(box)
+    if not isinstance(items, list):
         return None
     markers = []
-    for item in data:
+    for item in items:
         if not isinstance(item, dict):
             if isinstance(item, str):
                 markers.append({"text": item, "wrong": None})
@@ -100,11 +139,15 @@ def _parse_markers(content: str) -> list[str] | None:
             combined = marker + text
         wrong = item.get("wrong")
         markers.append({"text": combined, "wrong": bool(wrong) if isinstance(wrong, bool) else None})
-    return markers or None
+    if not markers:
+        return None
+    return markers, hw_boxes
 
 
-def ai_markers(image: np.ndarray) -> list[str] | None:
-    """问 AI 每道题第一行的"题号+开头几个字"；失败返回 None（走纯几何降级）。"""
+def ai_markers(image: np.ndarray) -> tuple[list[dict], list[list[int]]] | None:
+    """问 AI 每道题第一行的"题号+开头几个字"和手写痕迹包围盒。
+
+    返回 (题号列表, 归一化手写框)；失败返回 None（走纯几何降级）。"""
     key = _api_key()
     if key is None or image is None or image.size == 0:
         return None
@@ -131,7 +174,7 @@ def ai_markers(image: np.ndarray) -> list[str] | None:
                     }
                 ],
                 "temperature": 0,
-                "max_tokens": 2000,
+                "max_tokens": 4000,
                 # 关掉深度思考：这个任务只是"读出题号行"，想得越久等得越久
                 # （实测 64s → 8s），准确度没有差别。不支持该参数的模型会
                 # 报错，走降级路径。
@@ -141,7 +184,10 @@ def ai_markers(image: np.ndarray) -> list[str] | None:
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
-        return _parse_markers(content)
+        parsed = _parse_markers(content)
+        if parsed is None:
+            return None
+        return parsed
     except Exception:
         return None
 
@@ -206,16 +252,18 @@ def _dedup_lines(lines: list[int], min_gap: int) -> list[int]:
 
 def split_plan(
     image: np.ndarray, geometric_lines: list[int]
-) -> tuple[list[int], bool, list[bool | None]]:
+) -> tuple[list[int], bool, list[bool | None], list[list[int]]]:
     """AI 语义 + OCR 定位 + 几何空白带的最终合并。
 
-    返回 (切线, AI 是否参与, 每条线对应题的对错判断)。
+    返回 (切线, AI 是否参与, 每条线对应题的对错判断, 手写痕迹框)。
+    手写框是整图像素坐标 [左, 上, 右, 下]，与切线无关（AI 对整页的
+    标注）；调用方把它按题切分后交给去手写用。
 
     OCR 和 AI 相互独立，并行跑省一半等待。AI 参与时第一条线之上是
     页眉（校名、单元号……），不是题：调用方保存切片时应丢弃第一片，
     N 道题正好 N 张卡；对错判断与切线一一对齐（第 i 条线 = 第 i 题）。
     AI 没给出任何可用信息时退回 ocr_split.merged_lines 的行为，
-    对错列表为空，页眉照旧成为第一张卡。
+    对错列表和手写框为空，页眉照旧成为第一张卡。
     """
     height, width = image.shape[:2]
     min_gap = max(6, int(height * 0.006))
@@ -223,9 +271,10 @@ def split_plan(
         strips_task = pool.submit(ocr_split.line_strips, image)
         markers_task = pool.submit(ai_markers, image)
         strips = strips_task.result()
-        markers = markers_task.result()
+        markers, hw_boxes_norm = markers_task.result() or ([], [])
 
     wrong_flags: list[bool | None] = []
+    hw_boxes_px: list[list[int]] = []
     if markers:
         # AI 在场时只信 AI 的题界：章节标题已被提示词排除，若再并上 OCR
         # 的中文数字模式，"一、精心选择"这类章节线会混回来变成碎片卡。
@@ -234,10 +283,18 @@ def split_plan(
         # 对错判断跟着各自的题界走；去重丢掉的行不带走判断
         kept = set(starts)
         wrong_flags = [w for y, x, w in matched if (y, x) in kept]
+        # 归一化手写框换算成整图像素坐标
+        hw_boxes_px = [
+            [
+                int(round(v / 999 * (width if i % 2 == 0 else height)))
+                for i, v in enumerate(box)
+            ]
+            for box in hw_boxes_norm
+        ]
     else:
         starts = sorted(ocr_split.filter_starts(strips, width))
     if not starts:
-        return ocr_split.merged_lines(image, geometric_lines), False, []
+        return ocr_split.merged_lines(image, geometric_lines), False, [], []
 
     mask = ocr_split._page_mask(image)
     profile = ocr_split._row_ink_profile(image, mask)
@@ -253,16 +310,40 @@ def split_plan(
 
     if not markers:
         # AI 没参与：几何线照旧全保留（并集），只多出 OCR 题号线
-        return _dedup_lines(lines + list(geometric_lines), min_gap), False, []
+        return _dedup_lines(lines + list(geometric_lines), min_gap), False, [], []
 
     # AI 成功：切线完全交给 AI/OCR 圈定的题号行。AI 已经把每道题的
     # 起始说全了（含无编号独立题），此时几何线能提供的只剩两类——
     # 题干和自己的图之间错切的线、页眉页脚的碎片线，恰好都是用户
     # 要删的边角料，一并丢弃。
-    return _dedup_lines(lines, min_gap), True, wrong_flags
+    return _dedup_lines(lines, min_gap), True, wrong_flags, hw_boxes_px
 
 
 def merged_lines(image: np.ndarray, geometric_lines: list[int]) -> list[int]:
     """只要切线（兼容入口）。"""
     return split_plan(image, geometric_lines)[0]
+
+
+def boxes_per_crop(
+    boxes: list[list[int]], lines: list[int], height: int, skip_first: bool
+) -> list[list[list[int]]]:
+    """把整页坐标的手写框按切线分到各张切片，转换成切片内坐标。
+
+    第 i 张切片覆盖 [bounds[i], bounds[i+1]]；跨界的框会被裁剪进
+    相邻两片（两片都会清框内的笔迹）。skip_first 时第一片（页眉）
+    已被丢弃，框随切片编号整体前移。
+    """
+    bounds = [0, *lines, height]
+    crops = list(zip(bounds, bounds[1:]))
+    if skip_first and crops:
+        crops = crops[1:]
+    per_crop: list[list[list[int]]] = [[] for _ in crops]
+    for x1, y1, x2, y2 in boxes:
+        for index, (top, bottom) in enumerate(crops):
+            if y2 <= top or y1 >= bottom:
+                continue
+            per_crop[index].append(
+                [x1, max(y1, top) - top, x2, min(y2, bottom) - top]
+            )
+    return per_crop
 
