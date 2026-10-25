@@ -118,6 +118,9 @@
             <button type="button" class="btn" data-days="30">近 30 天</button>
             <button type="button" class="btn btn-primary" data-days="0">全部</button>
         </span>
+        <label class="filter-label" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="cleanMode" checked> 去手写
+        </label>
         <span class="filter-label" id="countLabel"></span>
         <button id="printBtn" class="btn btn-primary" onclick="window.print()" disabled>打印这份练习卷</button>
         <button class="btn" onclick="window.close()">关闭</button>
@@ -128,8 +131,10 @@
         const paper = document.getElementById("paper");
         const kpFilter = document.getElementById("kpFilter");
         const countLabel = document.getElementById("countLabel");
+        const cleanModeToggle = document.getElementById("cleanMode");
 
         let allQuestions = [];
+        let cleanMode = true;
         let days = 0;
         const params = new URLSearchParams(location.search);
         const draftIds = params.has("ids") ? new Set(params.get("ids").split(",").filter(Boolean).map(Number)) : null;
@@ -188,6 +193,7 @@
         }
 
         function buildPaper() {
+            cleanMode = document.getElementById("cleanMode").checked;
             const sections = selectedQuestions().map((q) => {
                 let masks = [];
                 try {
@@ -195,7 +201,8 @@
                 } catch (e) {
                     masks = [];
                 }
-                return { kp: q.knowledge_point || "未分类错题", image: q.image_url, masks };
+                const image = cleanMode ? `${q.image_url}${q.image_url.includes("?") ? "&" : "?"}clean=1` : q.image_url;
+                return { kp: q.knowledge_point || "未分类错题", image, masks };
             });
 
             countLabel.textContent = `共 ${sections.length} 道`;
@@ -251,6 +258,8 @@
             });
             buildPaper();
         };
+
+        cleanModeToggle.addEventListener("change", buildPaper);
 
         fetch("/api/questions")
             .then((r) => { if (!r.ok) throw new Error("加载失败"); return r.json(); })

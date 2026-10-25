@@ -421,6 +421,55 @@ def suggest_split_lines(image: np.ndarray | Path | str) -> list[int]:
     return lines
 
 
+def remove_handwriting(image: np.ndarray) -> np.ndarray:
+    """去掉铅笔手写与红笔批注，保留印刷内容，返回新图（不改原图）。
+
+    印刷体明显深于铅笔字：按行取纸面亮度做参照算"墨水深度"，深度
+    直方图双峰时用 Otsu 找分界，浅的一类（含红笔，色域排除）填回
+    纸色。分界不落在合理区间、或浅类占比太小/太大时，判定这一页
+    没有可去的手写，原样返回——宁可去不掉，不能误删印刷。
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    red = (hsv[:, :, 1] > 60) & ((hsv[:, :, 0] < 20) | (hsv[:, :, 0] > 160))
+    mask = _page_mask(image)
+    paper_row = np.where(mask, gray, np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # 整行无纸的行是全 NaN
+        with np.errstate(all="ignore"):
+            reference = np.nanmedian(paper_row, axis=1)
+    reference = np.where(np.isnan(reference), 255.0, reference)
+
+    darkness = np.clip(
+        (reference[:, None] - gray.astype(np.float32)) / np.maximum(reference[:, None], 1),
+        0, 1,
+    )
+    ink = (darkness > 0.15) & mask & ~red
+    values = darkness[ink]
+    if values.size < 500:
+        return image
+    threshold, _ = cv2.threshold(
+        (values * 255).astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    threshold /= 255.0
+    # 分界要落在"铅笔浅、印刷深"的合理区间，浅类占比也要像话，否则
+    # 说明这一页没有可去的手写（或对比度不对），硬分只会误删印刷。
+    if not (0.30 <= threshold <= 0.72):
+        return image
+    light_fraction = float((values < threshold).mean())
+    if not (0.01 <= light_fraction <= 0.70):
+        return image
+
+    handwriting = ink & (darkness < threshold)
+    handwriting = cv2.dilate(
+        handwriting.astype(np.uint8), np.ones((3, 3), np.uint8)
+    ).astype(bool)  # 连铅笔字的抗锯齿边一起填掉
+    fill = np.clip(reference, 0, 255).astype(np.uint8)[:, None].repeat(3, axis=1)
+    result = image.copy()
+    result[handwriting] = fill[np.where(handwriting)[0]]
+    return result
+
+
 def crop_by_lines(image: np.ndarray, lines: list[int]) -> list[np.ndarray]:
     """Split an image at the given y positions. Empty lines yield the whole image."""
     height = image.shape[0]

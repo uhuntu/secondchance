@@ -177,6 +177,13 @@ function buildCard(q, index) {
         updateSelection();
     };
     choice.append(checkbox, document.createTextNode(`第 ${index} 题 · 加入本次重练`));
+    if (q.suspected_wrong) {
+        const badge = document.createElement("span");
+        badge.className = "suspect-badge";
+        badge.textContent = "疑似错题";
+        badge.title = "AI 根据批改痕迹判断，仅供参考；做对了就取消勾选";
+        choice.append(badge);
+    }
     body.appendChild(choice);
 
     const details = document.createElement("details");
@@ -415,7 +422,8 @@ function openSplit(q) {
             return data;
         })
         .then((data) => {
-            splitSkipFirst = false;  // 已存切片里没有独立的页眉段
+            // 上次保存的切法原样还原（含"第一段是页眉"的标记）
+            splitSkipFirst = !!data.skip_first;
             splitLines = (data.lines || []).slice().sort((a, b) => a - b);
             const img = new Image();
             img.onload = () => {

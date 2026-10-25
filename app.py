@@ -5,7 +5,7 @@ from pathlib import Path
 
 import cv2
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import or_, text
@@ -16,11 +16,12 @@ import ai_split
 from image_processing import (
     analyze,
     crop_by_lines,
+    remove_handwriting,
     heic_to_jpeg_bytes,
     suggest_split_lines,
     warp_with_corners,
 )
-from models import Question
+from models import PageSplit, Question
 
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -73,6 +74,7 @@ def ensure_schema(target_engine) -> None:
         ("source_image_path", "TEXT DEFAULT ''"),
         ("answer_masks", "TEXT DEFAULT ''"),
         ("crop_reviewed", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("suspected_wrong", "BOOLEAN NOT NULL DEFAULT 0"),
     ]:
         add_column_if_missing(target_engine, "questions", _col, _ddl)
     with target_engine.begin() as conn:
@@ -123,6 +125,7 @@ def question_to_dict(q: Question) -> dict:
             f"/uploads/{Path(q.source_image_path).name}" if q.source_image_path else ""
         ),
         "crop_reviewed": bool(q.crop_reviewed),
+        "suspected_wrong": bool(q.suspected_wrong),
         "answer_masks": q.answer_masks or "[]",
         "created_at": created_at.isoformat(),
     }
@@ -181,6 +184,27 @@ def _split_into_crops(image, lines: list[int], stem: str, skip_first: bool = Fal
     return paths
 
 
+def _save_page_split(db: Session, source_name: str, lines: list[int], skip_first: bool) -> None:
+    """把编辑器/AI 的切法存下来，编辑器下次打开原样还原。"""
+    row = db.get(PageSplit, source_name)
+    if row is None:
+        row = PageSplit(source_image_path=source_name)
+        db.add(row)
+    row.lines = json.dumps([int(line) for line in lines])
+    row.skip_first = bool(skip_first)
+    db.commit()
+
+
+def _load_page_split(db: Session, source_name: str) -> tuple[list[int], bool] | None:
+    row = db.get(PageSplit, source_name)
+    if row is None:
+        return None
+    try:
+        return json.loads(row.lines), bool(row.skip_first)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def _group_of(db: Session, source_image_path: str) -> list[Question]:
     return (
         db.query(Question)
@@ -196,6 +220,7 @@ def _apply_split(
     source_name: str,
     crop_paths: list[Path],
     rename_group_from: str | None = None,
+    wrong_flags: list[bool | None] | None = None,
 ) -> list[Question]:
     """把一页的题目整体换成新的切片集合。
 
@@ -204,6 +229,9 @@ def _apply_split(
 
     rename_group_from：整页换了新文件（手动摆正）时，把这一组一起改指向新整页，
     否则 source_image_path 会留在已删除的旧文件上。
+
+    wrong_flags：AI 对每道题的对错判断（与 crop_paths 对齐）。编辑器保存
+    不带它——重切不动 AI 的判断。
     """
     group = (
         _group_of(db, rename_group_from) if rename_group_from else _group_of(db, source_name)
@@ -216,15 +244,18 @@ def _apply_split(
             if index < len(crop_paths):
                 item.image_path = _stored_name(crop_paths[index])
                 item.crop_reviewed = True
+                if wrong_flags is not None and index < len(wrong_flags):
+                    item.suspected_wrong = bool(wrong_flags[index])
             else:
                 db.delete(item)
-        for crop_path in crop_paths[len(group):]:
+        for index, crop_path in enumerate(crop_paths[len(group):]):
             db.add(
                 Question(
                     subject=question.subject,
                     image_path=_stored_name(crop_path),
                     source_image_path=source_name,
                     crop_reviewed=True,
+                    suspected_wrong=bool(wrong_flags[len(group) + index]) if wrong_flags and len(wrong_flags) > len(group) + index else False,
                 )
             )
         db.commit()
@@ -324,10 +355,10 @@ def _create_page(
         analysis = analyze(raw_path)
         if page_points is not None:
             image = warp_with_corners(analysis.image, page_points)
-            lines, ai_active = ai_split.split_plan(image, suggest_split_lines(image))
+            lines, ai_active, wrong_flags = ai_split.split_plan(image, suggest_split_lines(image))
         else:
             image = analysis.image
-            lines, ai_active = ai_split.split_plan(image, analysis.lines)
+            lines, ai_active, wrong_flags = ai_split.split_plan(image, analysis.lines)
         page_detected = analysis.page_detected
         lines = _validate_lines(lines, image.shape[0])
         page_path = _save_page(image, stem)
@@ -353,10 +384,11 @@ def _create_page(
     db.add(representative)
     try:
         db.flush()
-        questions = _apply_split(db, representative, source_name, crop_paths)
+        questions = _apply_split(db, representative, source_name, crop_paths, wrong_flags=wrong_flags)
     except HTTPException:
         _delete_file(page_path)
         raise
+    _save_page_split(db, source_name, lines, ai_active)
     return {
         "questions": [question_to_dict(q) for q in questions],
         "page_detected": page_detected,
@@ -415,6 +447,7 @@ def split_question(
         skip_first=payload.skip_first,
     )
     questions = _apply_split(db, question, source_name, crop_paths)
+    _save_page_split(db, source_name, lines, payload.skip_first)
     return {"questions": [question_to_dict(q) for q in questions]}
 
 
@@ -441,7 +474,7 @@ def straighten_question(
         straightened = warp_with_corners(raw, payload.points)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    lines, ai_active = ai_split.split_plan(straightened, suggest_split_lines(straightened))
+    lines, ai_active, wrong_flags = ai_split.split_plan(straightened, suggest_split_lines(straightened))
     _validate_lines(lines, straightened.shape[0])
     # 先写新图再删旧图：中途失败也不会把这一组的原图弄丢。
     new_path = _save_page(straightened, f"{page_path.stem}_m{uuid.uuid4().hex[:8]}")
@@ -452,10 +485,18 @@ def straighten_question(
     )
     try:
         # 整组一起改指向新整页，否则 source_image_path 会指向已删除的旧文件。
-        questions = _apply_split(db, question, new_name, crop_paths, rename_group_from=source_name)
+        questions = _apply_split(
+            db, question, new_name, crop_paths,
+            rename_group_from=source_name, wrong_flags=wrong_flags,
+        )
     except HTTPException:
         _delete_file(new_path)
         raise
+    _save_page_split(db, new_name, lines, ai_active)
+    old_split = db.get(PageSplit, source_name)
+    if old_split is not None:
+        db.delete(old_split)
+        db.commit()
     _delete_file(page_path)
     return {
         "questions": [question_to_dict(q) for q in questions],
@@ -479,7 +520,7 @@ def suggest_question(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        lines, ai_active = ai_split.split_plan(
+        lines, ai_active, wrong_flags = ai_split.split_plan(
             image, suggest_split_lines(image)
         )
         return {
@@ -505,19 +546,25 @@ def get_page(question_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     group = _group_of(db, question.source_image_path)
     height = int(image.shape[0])
-    # 现存切片的高度换算成这一页上的分割线，编辑器打开就是上次的样子。
-    lines = []
-    offset = 0
-    for item in group[:-1]:
-        crop = cv2.imread(str(_resolve_upload(item.image_path)))
-        offset += int(crop.shape[0]) if crop is not None else 0
-        if offset < height:
-            lines.append(offset)
+    # 优先用存下来的切法（含页眉边界）；老页面没存过，才用切片高度反推。
+    stored = _load_page_split(db, question.source_image_path)
+    if stored is not None:
+        lines, skip_first = stored
+    else:
+        skip_first = False
+        lines = []
+        offset = 0
+        for item in group[:-1]:
+            crop = cv2.imread(str(_resolve_upload(item.image_path)))
+            offset += int(crop.shape[0]) if crop is not None else 0
+            if offset < height:
+                lines.append(offset)
     return {
         "source_image_url": f"/uploads/{page_path.name}",
         "width": int(image.shape[1]),
         "height": height,
         "lines": lines,
+        "skip_first": skip_first,
         "question_count": len(group),
     }
 
@@ -633,11 +680,19 @@ def delete_question_page(question_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/uploads/{filename}")
-def get_upload(filename: str):
+def get_upload(filename: str, clean: int = 0):
     safe_name = Path(filename).name
     if safe_name != filename or not safe_name:
         raise HTTPException(400, "非法的文件名")
     file_path = UPLOAD_DIR / safe_name
     if not file_path.is_file():
         raise HTTPException(404, "文件不存在")
+    if clean:
+        # 练习卷的"去手写"模式：现场生成铅笔/红笔移除版，原图不动
+        image = cv2.imread(str(file_path))
+        if image is not None:
+            cleaned = remove_handwriting(image)
+            ok, buffer = cv2.imencode(".jpg", cleaned, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            if ok:
+                return Response(content=buffer.tobytes(), media_type="image/jpeg")
     return FileResponse(file_path)

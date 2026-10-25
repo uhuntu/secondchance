@@ -627,3 +627,13 @@ main { padding-bottom: 130px; }
         margin: 8px 0 0;
     }
 }
+
+.suspect-badge {
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: #fdecea;
+    color: #c0392b;
+    font-size: 12px;
+    white-space: nowrap;
+}

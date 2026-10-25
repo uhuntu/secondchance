@@ -258,6 +258,36 @@ def test_split_endpoint_recuts_the_same_page(api):
     assert api.client.get(page_meta.json()["source_image_url"]).status_code == 200
 
 
+def test_page_split_is_persisted_for_the_editor(api):
+    """编辑器打开时看到的必须是上次保存的切法（含页眉标记）。"""
+    payload = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    first = payload["questions"][0]
+    height = payload["height"]
+
+    # 上传后：切法已持久化（测试环境无 AI，skip_first 为假）
+    opened = api.client.get(f"/api/questions/{first['id']}/page")
+    assert opened.status_code == 200
+    assert opened.json()["skip_first"] is False
+
+    lines = [height // 4, height // 2, (height * 3) // 4]
+    saved = api.client.post(
+        f"/api/questions/{first['id']}/split",
+        json={"lines": lines, "skip_first": True},
+    )
+    assert saved.status_code == 200
+    assert len(saved.json()["questions"]) == 3
+
+    reopened = api.client.get(f"/api/questions/{first['id']}/page")
+    assert reopened.status_code == 200
+    data = reopened.json()
+    assert data["lines"] == lines
+    assert data["skip_first"] is True
+
+
 def test_split_accepts_skip_first(api):
     """编辑器保存时带 skip_first：第一段（页眉）不保存成题。"""
     payload = api.client.post(

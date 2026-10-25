@@ -39,10 +39,13 @@ PROMPT = (
     "这是小学数学作业页的照片。请找出页面上每道题第一行的开头文字，"
     "包括：大题（1. 2. 3.）、大题下的小题（(1) (2)）、以中文数字编号且紧跟题目内容的独立题，"
     "以及没有编号但独立成题的行。页眉、学校名、页脚、分数、选项行（A. B. C.）不算。"
+    "同时判断每道题孩子是否做错：看老师的批改痕迹（红叉、圈出错处、扣分），"
+    "有明显错误痕迹填 true，批改是勾或没有痕迹、看不出来填 false。"
     "只输出 JSON 数组，按从上到下顺序，每项形如 "
     '{"marker": "题号原文", "text": "该行开头4到8个字，照抄照片原文，不要改写", '
     '"section": 该行是否为章节标题（如「一、精心选择」「二、认真填写」这类只有题型说明、'
-    "下面还有 1. 2. 小题的行；是填 true，不是填 false)}。"
+    "下面还有 1. 2. 小题的行；是填 true，不是填 false), "
+    '"wrong": 该题是否做错（true/false)}。'
     "不要输出任何其他内容。"
 )
 
@@ -78,7 +81,7 @@ def _parse_markers(content: str) -> list[str] | None:
     for item in data:
         if not isinstance(item, dict):
             if isinstance(item, str):
-                markers.append(item)
+                markers.append({"text": item, "wrong": None})
             continue
         # 章节标题（"一、精心选择"这类）不是题界：留着只会切出碎片卡。
         # 靠模型显式标注，比提示词"别输出它"可靠——模型偶尔不听话。
@@ -92,9 +95,11 @@ def _parse_markers(content: str) -> list[str] | None:
             _normalize(text).startswith(_normalize(marker))
             or _normalize(marker).startswith(_normalize(text))
         ):
-            markers.append(text if len(text) >= len(marker) else marker)
+            combined = text if len(text) >= len(marker) else marker
         else:
-            markers.append(marker + text)
+            combined = marker + text
+        wrong = item.get("wrong")
+        markers.append({"text": combined, "wrong": bool(wrong) if isinstance(wrong, bool) else None})
     return markers or None
 
 
@@ -142,18 +147,18 @@ def ai_markers(image: np.ndarray) -> list[str] | None:
 
 
 def _match_markers(
-    strips: list[tuple[int, int, str, float]], markers: list[str]
-) -> list[tuple[int, int]]:
-    """把 AI 说的每行匹配到 OCR 检测框上，返回按 y 升序的题界位置。
+    strips: list[tuple[int, int, str, float]], markers: list[dict]
+) -> list[tuple[int, int, bool | None]]:
+    """把 AI 说的每行匹配到 OCR 检测框上，返回按 y 升序的 (题界, 对错判断)。
 
     从上往下逐个匹配且只往后找：AI 的顺序本身就是页面顺序，能防止
     "1.3.66" 错配到别的行。识别有噪（"2.（北京"→"2（北"），比归一化
     后的公共前缀，≥2 个字算命中；首位数字对上而后面被误读时放宽到 1。
     """
-    starts: list[tuple[int, int]] = []
+    starts: list[tuple[int, int, bool | None]] = []
     floor = -1
     for marker in markers:
-        key = _normalize(marker)
+        key = _normalize(marker.get("text", ""))
         if len(key) < 2:
             continue
         best, best_prefix = None, 0
@@ -176,7 +181,7 @@ def _match_markers(
         elif best is not None and best_prefix == 1 and key[0].isdigit():
             matched = best  # 题号数字对上了，后半被 OCR 误读
         if matched is not None:
-            starts.append(matched)
+            starts.append((matched[0], matched[1], marker.get("wrong")))
             floor = matched[0]
     return starts
 
@@ -199,13 +204,18 @@ def _dedup_lines(lines: list[int], min_gap: int) -> list[int]:
     return result
 
 
-def split_plan(image: np.ndarray, geometric_lines: list[int]) -> tuple[list[int], bool]:
-    """AI 语义 + OCR 定位 + 几何空白带的最终合并：返回 (切线, AI 是否参与)。
+def split_plan(
+    image: np.ndarray, geometric_lines: list[int]
+) -> tuple[list[int], bool, list[bool | None]]:
+    """AI 语义 + OCR 定位 + 几何空白带的最终合并。
+
+    返回 (切线, AI 是否参与, 每条线对应题的对错判断)。
 
     OCR 和 AI 相互独立，并行跑省一半等待。AI 参与时第一条线之上是
     页眉（校名、单元号……），不是题：调用方保存切片时应丢弃第一片，
-    N 道题正好 N 张卡。AI 没给出任何可用信息时退回
-    ocr_split.merged_lines 的行为，页眉照旧成为第一张卡。
+    N 道题正好 N 张卡；对错判断与切线一一对齐（第 i 条线 = 第 i 题）。
+    AI 没给出任何可用信息时退回 ocr_split.merged_lines 的行为，
+    对错列表为空，页眉照旧成为第一张卡。
     """
     height, width = image.shape[:2]
     min_gap = max(6, int(height * 0.006))
@@ -215,14 +225,19 @@ def split_plan(image: np.ndarray, geometric_lines: list[int]) -> tuple[list[int]
         strips = strips_task.result()
         markers = markers_task.result()
 
+    wrong_flags: list[bool | None] = []
     if markers:
         # AI 在场时只信 AI 的题界：章节标题已被提示词排除，若再并上 OCR
         # 的中文数字模式，"一、精心选择"这类章节线会混回来变成碎片卡。
-        starts = _dedup_starts(_match_markers(strips, markers), min_gap)
+        matched = _match_markers(strips, markers)
+        starts = _dedup_starts([(y, x) for y, x, _w in matched], min_gap)
+        # 对错判断跟着各自的题界走；去重丢掉的行不带走判断
+        kept = set(starts)
+        wrong_flags = [w for y, x, w in matched if (y, x) in kept]
     else:
         starts = sorted(ocr_split.filter_starts(strips, width))
     if not starts:
-        return ocr_split.merged_lines(image, geometric_lines), False
+        return ocr_split.merged_lines(image, geometric_lines), False, []
 
     mask = ocr_split._page_mask(image)
     profile = ocr_split._row_ink_profile(image, mask)
@@ -238,13 +253,13 @@ def split_plan(image: np.ndarray, geometric_lines: list[int]) -> tuple[list[int]
 
     if not markers:
         # AI 没参与：几何线照旧全保留（并集），只多出 OCR 题号线
-        return _dedup_lines(lines + list(geometric_lines), min_gap), False
+        return _dedup_lines(lines + list(geometric_lines), min_gap), False, []
 
     # AI 成功：切线完全交给 AI/OCR 圈定的题号行。AI 已经把每道题的
     # 起始说全了（含无编号独立题），此时几何线能提供的只剩两类——
     # 题干和自己的图之间错切的线、页眉页脚的碎片线，恰好都是用户
     # 要删的边角料，一并丢弃。
-    return _dedup_lines(lines, min_gap), True
+    return _dedup_lines(lines, min_gap), True, wrong_flags
 
 
 def merged_lines(image: np.ndarray, geometric_lines: list[int]) -> list[int]:
