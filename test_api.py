@@ -201,6 +201,20 @@ def test_import_page_splits_into_ready_to_use_questions(api):
         db.close()
 
 
+def test_judge_without_ai_leaves_flags_untouched(api):
+    """AI 没参与时判错接口不动任何标记，也不报错。"""
+    payload = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    first = payload["questions"][0]
+    result = api.client.post(f"/api/questions/{first['id']}/judge").json()
+    assert result["ai_active"] is False and result["updated"] is False
+    listed = api.client.get("/api/questions").json()
+    assert all(q["suspected_wrong"] is False for q in listed)
+
+
 def test_delete_page_removes_group_and_source(api):
     """整页删除：同组全部题、所有切片和整页原图一起消失。"""
     payload = api.client.post(

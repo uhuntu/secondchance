@@ -130,6 +130,7 @@ function renderList(list) {
         if (representative.source_image_url) {
             actions.append(
                 smallButton("看整页", () => openLightbox(representative.source_image_url)),
+                smallButton("AI 识别错题", () => judgePage(representative)),
                 smallButton(`删除整页（${items.length} 题）`, () => deletePage(items))
             );
         }
@@ -272,6 +273,24 @@ function deleteQuestion(id) {
             else showMsg("删除失败", false);
         })
         .catch(() => showMsg("删除失败", false));
+}
+
+function judgePage(representative) {
+    fetch(`/api/questions/${representative.id}/judge`, { method: "POST" })
+        .then((r) => r.json().catch(() => ({})))
+        .then((data) => {
+            if (!data.ai_active) {
+                showMsg("AI 没参与（未配置 key 或网络失败），没有更新标记", false);
+                return;
+            }
+            if (!data.updated) {
+                showMsg("这一页的切法和 AI 识别的题数对不上，请在编辑器里重新自动切后再识别", false);
+                return;
+            }
+            showMsg(data.suspected ? `识别出 ${data.suspected} 道疑似错题，已标记` : "AI 看了一遍：这页没有发现明显的错题", true);
+            refresh();
+        })
+        .catch(() => showMsg("识别失败", false));
 }
 
 function deletePage(items) {

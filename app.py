@@ -532,6 +532,56 @@ def suggest_question(question_id: int, db: Session = Depends(get_db)):
         return {"lines": [], "ai_active": False}
 
 
+@app.post("/api/questions/{question_id}/judge")
+def judge_question_page(question_id: int, db: Session = Depends(get_db)):
+    """AI 重新判这一页每道题的对错，更新卡片上的疑似错题徽标。
+
+    判断按页内位置落到切片上：一张切片里套着几道 AI 识别的题，
+    就继承它们的判断（老页面的粗切片里有一道错，整片标疑似）。
+    AI 没参与（没配 key、网络失败）时不动任何标记。
+    """
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(404, "错题不存在")
+    if not question.source_image_path:
+        raise HTTPException(400, "这道题没有整页原图")
+    page_path = _resolve_upload(question.source_image_path)
+    image = cv2.imread(str(page_path))
+    if image is None:
+        raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
+    try:
+        lines, ai_active, wrong_flags = ai_split.split_plan(
+            image, suggest_split_lines(image)
+        )
+    except HTTPException:
+        return {"updated": False, "suspected": 0, "ai_active": False}
+    if not ai_active:
+        return {"updated": False, "suspected": 0, "ai_active": False}
+
+    group = _group_of(db, question.source_image_path)
+    # 每张切片按页内位置圈定范围，套进来的 AI 判断取"或"
+    tops = [0]
+    for item in group[:-1]:
+        crop = cv2.imread(str(_resolve_upload(item.image_path)))
+        tops.append(tops[-1] + (int(crop.shape[0]) if crop is not None else 0))
+    bounds = [*tops, image.shape[0] + 1]
+
+    suspected = 0
+    for index, item in enumerate(group):
+        top, bottom = bounds[index], bounds[index + 1]
+        inside = [
+            bool(w)
+            for line, w in zip(lines, wrong_flags)
+            if top <= line < bottom
+        ]
+        if inside:
+            item.suspected_wrong = any(inside)
+            if any(inside):
+                suspected += 1
+    db.commit()
+    return {"updated": True, "suspected": suspected, "ai_active": True}
+
+
 @app.get("/api/questions/{question_id}/page")
 def get_page(question_id: int, db: Session = Depends(get_db)):
     """重新打开切割编辑器时，取这一页的原图和当前分割线。"""
