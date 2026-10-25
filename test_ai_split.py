@@ -14,6 +14,18 @@ def test_parse_markers():
     assert ai_split._parse_markers("") is None
 
 
+def test_parse_markers_drops_section_headers():
+    """模型显式标注 section 的章节标题不是题界，直接丢弃。"""
+    content = (
+        '[{"marker": "一、", "text": "精心选择。", "section": true},'
+        '{"marker": "1.", "text": "3.66÷0.32", "section": false},'
+        '{"marker": "2.", "text": "(北京市·东", "section": false}]'
+    )
+    assert ai_split._parse_markers(content) == ["1.3.66÷0.32", "2.(北京市·东"]
+    # 旧格式（没有 section 字段）照常保留
+    assert ai_split._parse_markers('[{"marker": "5.", "text": "（龙岩市"}]') == ["5.（龙岩市"]
+
+
 def _strips() -> list[tuple[int, int, str, float]]:
     return [
         (90, 400, "曾营小学2026", 0.9),   # 页眉，不是题号
@@ -67,10 +79,12 @@ def test_merged_lines_with_ai_drops_junk_inside_spans(monkeypatch):
     strips = [(84, 80, "一、第一块", 0.9), (424, 80, "1.第二块", 0.9), (764, 80, "2.第三块", 0.9)]
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: strips)
     monkeypatch.setattr(ai_split, "ai_markers", lambda img: ["一、第一块", "1.第二块", "2.第三块"])
-    merged = ai_split.merged_lines(image, geometric)
-    # 三道题各一条线，几何线全部让位给 AI 题界（题内错切 + 页眉页脚碎片都不要）
-    assert len(merged) == 3
-    assert merged[0] < 120 and 300 < merged[1] < 440 and 640 < merged[2] < 780
+    lines, ai_active = ai_split.split_plan(image, geometric)
+    # 几何线全部让位给 AI 题界：3 道题 3 条线，调用方丢弃第一片（页眉）
+    assert ai_active is True
+    assert len(lines) == 3
+    assert lines[0] < 120 and 300 < lines[1] < 440 and 640 < lines[2] < 780
+    assert ai_split.merged_lines(image, geometric) == lines
 
 
 def test_merged_lines_with_ai_drops_margin_fragments(monkeypatch):
@@ -86,7 +100,7 @@ def test_merged_lines_with_ai_drops_margin_fragments(monkeypatch):
     assert all(line > 300 for line in merged), merged
 
 
-def test_merged_lines_without_ai_keeps_geometric_union(monkeypatch):
+def test_split_plan_without_ai_keeps_geometric_union(monkeypatch):
     from image_processing import suggest_split_lines
 
     image = _page_with_gaps()
@@ -94,7 +108,9 @@ def test_merged_lines_without_ai_keeps_geometric_union(monkeypatch):
     strips = [(84, 80, "1.第一块", 0.9)]
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: strips)
     monkeypatch.setattr(ai_split, "ai_markers", lambda img: None)
-    assert ai_split.merged_lines(image, geometric) == ocr_split.merged_lines(image, geometric)
+    lines, ai_active = ai_split.split_plan(image, geometric)
+    assert ai_active is False
+    assert lines == ocr_split.merged_lines(image, geometric)
 
 
 def test_merged_lines_degrades_without_api_key(monkeypatch):
@@ -105,7 +121,9 @@ def test_merged_lines_degrades_without_api_key(monkeypatch):
     monkeypatch.setattr(ai_split, "_api_key", lambda: None)
     assert ai_split.ai_markers(image) is None
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: [])
-    assert ai_split.merged_lines(image, geometric) == ocr_split.merged_lines(image, geometric)
+    lines, ai_active = ai_split.split_plan(image, geometric)
+    assert ai_active is False
+    assert lines == ocr_split.merged_lines(image, geometric)
 
 
 if __name__ == "__main__":

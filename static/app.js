@@ -308,6 +308,7 @@ const MIN_LINE_GAP_PX = 14;  // 两条线之间的最小间隔（屏幕像素）
 let splitQuestionRef = null;
 let splitImage = null;
 let splitLines = [];
+let splitSkipFirst = false;  // 第一段是页眉（AI 重新自动切后为真），保存时丢弃
 let splitDragIndex = -1;
 let splitDragMoved = false;
 let splitChipsRendered = -1;
@@ -334,19 +335,23 @@ function drawSplit() {
     splitContext.clearRect(0, 0, width, height);
     splitContext.drawImage(splitImage, 0, 0, width, height);
 
-    // 交替底色，让"第几道题"一眼可数
+    // 交替底色，让"第几道题"一眼可数；第一段是页眉时灰显并单独标注
     let top = 0;
     splitLines.concat([height]).forEach((bottom, index) => {
         if (bottom <= top) return;
-        splitContext.fillStyle = index % 2 ? "rgba(74,108,247,0.10)" : "rgba(74,108,247,0.03)";
+        const isPreamble = index === 0 && splitSkipFirst;
+        const questionNumber = splitSkipFirst ? index : index + 1;
+        splitContext.fillStyle = isPreamble
+            ? "rgba(120,120,120,0.18)"
+            : index % 2 ? "rgba(74,108,247,0.10)" : "rgba(74,108,247,0.03)";
         splitContext.fillRect(0, top, width, bottom - top);
-        const label = `${index + 1}`;
+        const label = isPreamble ? "页眉" : `${questionNumber}`;
         splitContext.font = `bold ${px(18)}px sans-serif`;
         splitContext.textAlign = "center";
         splitContext.textBaseline = "middle";
         const cx = width / 2;
         const cy = (top + bottom) / 2;
-        splitContext.fillStyle = "rgba(74,108,247,0.85)";
+        splitContext.fillStyle = isPreamble ? "rgba(90,90,90,0.75)" : "rgba(74,108,247,0.85)";
         splitContext.beginPath();
         splitContext.arc(cx, cy, px(16), 0, Math.PI * 2);
         splitContext.fill();
@@ -378,7 +383,7 @@ function drawSplit() {
         splitContext.fillText("↕", cx, line);
     });
 
-    splitCount.textContent = `当前 ${splitLines.length + 1} 道题`;
+    splitCount.textContent = `当前 ${splitLines.length + 1 - (splitSkipFirst ? 1 : 0)} 道题`;
     splitSaveBtn.disabled = false;
     // 拖动过程中不重建标签（会闪），只在条数变化或拖动结束时刷新
     if (splitDragIndex < 0 && splitChipsRendered !== splitLines.length) refreshLineChips();
@@ -410,6 +415,7 @@ function openSplit(q) {
             return data;
         })
         .then((data) => {
+            splitSkipFirst = false;  // 已存切片里没有独立的页眉段
             splitLines = (data.lines || []).slice().sort((a, b) => a - b);
             const img = new Image();
             img.onload = () => {
@@ -478,6 +484,7 @@ function refreshLineChips() {
         chip.textContent = `线 ${index + 1} ×`;
         chip.title = "删除这条分割线";
         chip.onclick = () => {
+            if (index === 0 && splitSkipFirst) splitSkipFirst = false;  // 页眉并入第 1 题
             splitLines.splice(index, 1);
             drawSplit();
         };
@@ -497,6 +504,7 @@ function closeSplit() {
     splitQuestionRef = null;
     splitImage = null;
     splitLines = [];
+    splitSkipFirst = false;
 }
 
 document.getElementById("splitCancelBtn").onclick = closeSplit;
@@ -513,11 +521,13 @@ document.getElementById("splitResetBtn").onclick = () => {
                 showMsg(data.detail || "重新自动切分不可用", false);
                 return;
             }
+            splitSkipFirst = !!data.ai_active;
             splitLines = data.lines.slice().sort((a, b) => a - b);
             drawSplit();
+            const count = splitLines.length + 1 - (splitSkipFirst ? 1 : 0);
             showMsg(
-                splitLines.length
-                    ? `已自动切成 ${splitLines.length + 1} 道，可继续拖动调整`
+                count > 1
+                    ? `已自动切成 ${count} 道${splitSkipFirst ? "（页眉不保存）" : ""}，可继续拖动调整`
                     : "这一页没找到明显的题间空隙，已按整页一道处理",
                 true
             );
@@ -536,7 +546,7 @@ splitSaveBtn.onclick = async () => {
         const response = await fetch(`/api/questions/${splitQuestionRef.id}/split`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ lines: splitLines }),
+            body: JSON.stringify({ lines: splitLines, skip_first: splitSkipFirst }),
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.detail || "保存切割结果失败");

@@ -168,8 +168,11 @@ def _validate_lines(lines: list, height: int) -> list[int]:
     return cleaned
 
 
-def _split_into_crops(image, lines: list[int], stem: str) -> list[Path]:
+def _split_into_crops(image, lines: list[int], stem: str, skip_first: bool = False) -> list[Path]:
     crops = crop_by_lines(image, lines)
+    if skip_first and len(crops) > 1:
+        # AI 已确认第一片是页眉（校名、单元号……），不是题，直接丢弃
+        crops = crops[1:]
     paths = []
     for index, crop in enumerate(crops, 1):
         path = UPLOAD_DIR / f"{stem}_q{index}.jpg"
@@ -321,14 +324,14 @@ def _create_page(
         analysis = analyze(raw_path)
         if page_points is not None:
             image = warp_with_corners(analysis.image, page_points)
-            lines = ai_split.merged_lines(image, suggest_split_lines(image))
+            lines, ai_active = ai_split.split_plan(image, suggest_split_lines(image))
         else:
             image = analysis.image
-            lines = ai_split.merged_lines(image, analysis.lines)
+            lines, ai_active = ai_split.split_plan(image, analysis.lines)
         page_detected = analysis.page_detected
         lines = _validate_lines(lines, image.shape[0])
         page_path = _save_page(image, stem)
-        crop_paths = _split_into_crops(image, lines, stem)
+        crop_paths = _split_into_crops(image, lines, stem, skip_first=ai_active)
     except HTTPException:
         _delete_file(raw_path)
         raise
@@ -381,6 +384,7 @@ async def import_page(
 
 class SplitRequest(BaseModel):
     lines: list[int]
+    skip_first: bool = False  # 第一段是页眉（AI 重新自动切时会标记），保存时丢弃
 
 
 class ManualStraighten(SplitRequest):
@@ -406,7 +410,10 @@ def split_question(
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
 
     lines = _validate_lines(payload.lines, image.shape[0])
-    crop_paths = _split_into_crops(image, lines, f"{page_path.stem}_s{uuid.uuid4().hex[:8]}")
+    crop_paths = _split_into_crops(
+        image, lines, f"{page_path.stem}_s{uuid.uuid4().hex[:8]}",
+        skip_first=payload.skip_first,
+    )
     questions = _apply_split(db, question, source_name, crop_paths)
     return {"questions": [question_to_dict(q) for q in questions]}
 
@@ -434,13 +441,14 @@ def straighten_question(
         straightened = warp_with_corners(raw, payload.points)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    lines = ai_split.merged_lines(straightened, suggest_split_lines(straightened))
+    lines, ai_active = ai_split.split_plan(straightened, suggest_split_lines(straightened))
     _validate_lines(lines, straightened.shape[0])
     # 先写新图再删旧图：中途失败也不会把这一组的原图弄丢。
     new_path = _save_page(straightened, f"{page_path.stem}_m{uuid.uuid4().hex[:8]}")
     new_name = _stored_name(new_path)
     crop_paths = _split_into_crops(
-        straightened, lines, f"{new_path.stem}_s{uuid.uuid4().hex[:8]}"
+        straightened, lines, f"{new_path.stem}_s{uuid.uuid4().hex[:8]}",
+        skip_first=ai_active,
     )
     try:
         # 整组一起改指向新整页，否则 source_image_path 会指向已删除的旧文件。
@@ -471,14 +479,16 @@ def suggest_question(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
+        lines, ai_active = ai_split.split_plan(
+            image, suggest_split_lines(image)
+        )
         return {
-            "lines": _validate_lines(
-                ai_split.merged_lines(image, suggest_split_lines(image)), image.shape[0]
-            )
+            "lines": _validate_lines(lines, image.shape[0]),
+            "ai_active": ai_active,
         }
     except HTTPException:
         # 建议线不合法（贴边/太密）时宁可不给，也不要给一堆废线。
-        return {"lines": []}
+        return {"lines": [], "ai_active": False}
 
 
 @app.get("/api/questions/{question_id}/page")

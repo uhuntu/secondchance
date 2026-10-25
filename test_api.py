@@ -258,6 +258,31 @@ def test_split_endpoint_recuts_the_same_page(api):
     assert api.client.get(page_meta.json()["source_image_url"]).status_code == 200
 
 
+def test_split_accepts_skip_first(api):
+    """编辑器保存时带 skip_first：第一段（页眉）不保存成题。"""
+    payload = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    first = payload["questions"][0]
+    height = payload["height"]
+
+    plain = api.client.post(
+        f"/api/questions/{first['id']}/split",
+        json={"lines": [height // 4, height // 2, (height * 3) // 4]},
+    )
+    assert plain.status_code == 200
+    assert len(plain.json()["questions"]) == 4
+
+    skipped = api.client.post(
+        f"/api/questions/{first['id']}/split",
+        json={"lines": [height // 4, height // 2, (height * 3) // 4], "skip_first": True},
+    )
+    assert skipped.status_code == 200
+    assert len(skipped.json()["questions"]) == 3
+
+
 def test_split_preserves_knowledge_point_by_position(api):
     """按序号保留知识点：拖动分割线时不必把标注重录一遍。"""
     payload = api.client.post(
