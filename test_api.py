@@ -517,3 +517,49 @@ def test_judge_fills_missing_knowledge_points_only(api, monkeypatch):
     assert listed[first["id"]]["suspected_wrong"] is True
     assert listed[second["id"]]["knowledge_point"] == "可能性"
     assert listed[second["id"]]["suspected_wrong"] is False
+
+
+def test_print_recording_and_history(api):
+    """打印即记录：卡片拿到练过次数，历史按卷新→旧分组，不存在的 id 被过滤。"""
+    first = _create_question(api).json()
+    second = _create_question(api, name="wrong2.png").json()
+
+    recorded = api.client.post(
+        "/api/prints", json={"question_ids": [first["id"], second["id"], 99999]}
+    )
+    assert recorded.status_code == 201, recorded.text
+    assert recorded.json()["recorded"] == 2
+
+    listed = {q["id"]: q for q in api.client.get("/api/questions").json()}
+    assert listed[first["id"]]["practice_count"] == 1
+    assert listed[first["id"]]["last_practiced_at"]
+
+    again = api.client.post("/api/prints", json={"question_ids": [first["id"]]})
+    assert again.status_code == 201
+
+    listed = {q["id"]: q for q in api.client.get("/api/questions").json()}
+    assert listed[first["id"]]["practice_count"] == 2
+    assert listed[second["id"]]["practice_count"] == 1
+
+    papers = api.client.get("/api/prints").json()
+    assert len(papers) == 2
+    assert papers[0]["count"] == 1 and papers[1]["count"] == 2  # 新→旧
+    assert [q["id"] for q in papers[1]["questions"]] == sorted([first["id"], second["id"]])
+    assert papers[1]["questions"][0]["knowledge_point"] == "分数计算"
+    assert papers[1]["questions"][0]["image_url"].startswith("/uploads/")
+
+    assert api.client.post("/api/prints", json={"question_ids": [99999]}).status_code == 400
+
+
+def test_history_survives_question_deletion(api):
+    """题删了，"哪天练过"仍在：历史条目保留，明细里少一个对象。"""
+    question = _create_question(api).json()
+    assert api.client.post(
+        "/api/prints", json={"question_ids": [question["id"]]}
+    ).status_code == 201
+    assert api.client.delete(f"/api/questions/{question['id']}").status_code == 204
+
+    papers = api.client.get("/api/prints").json()
+    assert len(papers) == 1
+    assert papers[0]["count"] == 1
+    assert papers[0]["questions"] == []

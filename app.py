@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import or_, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from database import Base, add_column_if_missing, engine, get_db
@@ -21,7 +21,7 @@ from image_processing import (
     suggest_split_lines,
     warp_with_corners,
 )
-from models import PageSplit, Question
+from models import PageSplit, PracticeRecord, Question
 
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -111,11 +111,19 @@ app = FastAPI(title="Second Chance")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
-def question_to_dict(q: Question) -> dict:
+def question_to_dict(q: Question, practice: dict[int, tuple[int, object]] | None = None) -> dict:
     created_at = q.created_at
     if created_at.tzinfo is None:
         # SQLite drops timezone metadata; stored timestamps are UTC.
         created_at = created_at.replace(tzinfo=timezone.utc)
+    practice_count, last_practiced = 0, None
+    if practice and q.id in practice:
+        practice_count, last_practiced = practice[q.id]
+        if last_practiced is not None:
+            if last_practiced.tzinfo is None:
+                # SQLite drops timezone metadata; stored timestamps are UTC.
+                last_practiced = last_practiced.replace(tzinfo=timezone.utc)
+            last_practiced = last_practiced.isoformat()
     return {
         "id": q.id,
         "subject": q.subject,
@@ -129,6 +137,8 @@ def question_to_dict(q: Question) -> dict:
         "suspected_wrong": bool(q.suspected_wrong),
         "ink_boxes": q.ink_boxes or "[]",
         "answer_masks": q.answer_masks or "[]",
+        "practice_count": practice_count,
+        "last_practiced_at": last_practiced,
         "created_at": created_at.isoformat(),
     }
 
@@ -325,7 +335,18 @@ def list_questions(
     questions: list[Question] = []
     for key in sorted(groups, key=lambda k: max(q.id for q in groups[k]), reverse=True):
         questions.extend(groups[key])
-    return [question_to_dict(q) for q in questions]
+    # 练习记录聚合：一次 group-by 拿全量（次数 + 最近一次时间），避免逐题 N+1
+    practice_rows = (
+        db.query(
+            PracticeRecord.question_id,
+            func.count(PracticeRecord.id),
+            func.max(PracticeRecord.created_at),
+        )
+        .group_by(PracticeRecord.question_id)
+        .all()
+    )
+    practice = {qid: (count, last) for qid, count, last in practice_rows}
+    return [question_to_dict(q, practice=practice) for q in questions]
 
 
 @app.post("/api/questions", status_code=201)
@@ -787,6 +808,70 @@ def delete_question_page(question_id: int, db: Session = Depends(get_db)):
     db.commit()
     if source_name:
         _delete_file(_resolve_upload(source_name))
+
+
+class PrintRequest(BaseModel):
+    question_ids: list[int]
+
+
+@app.post("/api/prints", status_code=201)
+def record_print(payload: PrintRequest, db: Session = Depends(get_db)):
+    """打印练习卷时自动记一笔：哪些题、哪天练的。零操作步骤，失败不影响打印。"""
+    ids = sorted(set(payload.question_ids))
+    existing = {
+        row.id for row in db.query(Question.id).filter(Question.id.in_(ids))
+    }
+    if not existing:
+        raise HTTPException(400, "没有可记录的题目")
+    paper_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        PracticeRecord(paper_id=paper_id, question_id=qid, created_at=now)
+        for qid in existing
+    )
+    db.commit()
+    return {
+        "paper_id": paper_id,
+        "recorded": len(existing),
+        "created_at": now.isoformat(),
+    }
+
+
+@app.get("/api/prints")
+def list_prints(db: Session = Depends(get_db)):
+    """出卷历史：最近 10 张卷，新→旧；已删的题只影响明细，不影响次数。"""
+    rows = (
+        db.query(PracticeRecord)
+        .order_by(PracticeRecord.created_at.desc(), PracticeRecord.id.desc())
+        .all()
+    )
+    papers: dict[str, list[PracticeRecord]] = {}
+    for row in rows:
+        papers.setdefault(row.paper_id, []).append(row)
+
+    result = []
+    for paper_id, items in list(papers.items())[:10]:
+        # 按题 id 升序 = 卷面从上到下（同批入库 id 单调）
+        question_ids = sorted(item.question_id for item in items)
+        found = {
+            q.id: q
+            for q in db.query(Question).filter(Question.id.in_(question_ids))
+        }
+        result.append({
+            "paper_id": paper_id,
+            "created_at": items[0].created_at.replace(tzinfo=timezone.utc).isoformat(),
+            "count": len(items),
+            "questions": [
+                {
+                    "id": found[qid].id,
+                    "subject": found[qid].subject,
+                    "knowledge_point": found[qid].knowledge_point,
+                    "image_url": f"/uploads/{Path(found[qid].image_path).name}",
+                }
+                for qid in question_ids if qid in found
+            ],
+        })
+    return result
 
 
 @app.get("/uploads/{filename}")

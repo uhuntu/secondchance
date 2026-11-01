@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Second Chance</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261025-judge">
+    <link rel="stylesheet" href="/static/style.css?v=20261101-practice">
 </head>
 <body>
     <header>
@@ -44,6 +44,12 @@
             <div><p class="step-label">03 打印</p><strong id="selectionCount" aria-live="polite">已选 0 道题</strong></div>
             <button type="button" id="clearSelectionBtn" class="btn">开始新一卷</button>
             <button type="button" id="printSelectedBtn" class="btn btn-primary" disabled>预览并打印</button>
+        </section>
+
+        <section class="history-section">
+            <p class="step-label">04 出卷历史</p>
+            <h2>最近练过的卷子</h2>
+            <div id="historyList" class="history-list"></div>
         </section>
     </main>
 
@@ -136,6 +142,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20261025-judge"></script>
+    <script src="/static/app.js?v=20261101-practice"></script>
 </body>
 </html>

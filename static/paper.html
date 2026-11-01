@@ -122,7 +122,7 @@
             <input type="checkbox" id="cleanMode" checked> 去手写
         </label>
         <span class="filter-label" id="countLabel"></span>
-        <button id="printBtn" class="btn btn-primary" onclick="window.print()" disabled>打印这份练习卷</button>
+        <button id="printBtn" class="btn btn-primary" disabled>打印这份练习卷</button>
         <button class="btn" onclick="window.close()">关闭</button>
     </div>
     <div class="paper" id="paper"></div>
@@ -261,6 +261,27 @@
         };
 
         cleanModeToggle.addEventListener("change", buildPaper);
+
+        // 打印即记录：真实印出来的题（本次重练 / 筛选模式都适用）存进出卷历史。
+        // 按钮点击和 Ctrl+P 都会走到这里，printRecorded 防止一次打印记两笔；
+        // 记录失败静默——出卷历史少一笔无所谓，别耽误打印。
+        let printRecorded = false;
+        function recordPrint() {
+            if (printRecorded) return;
+            printRecorded = true;
+            const ids = selectedQuestions().map((q) => q.id);
+            if (!ids.length) return;
+            fetch("/api/prints", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question_ids: ids }),
+            }).catch(() => {});
+        }
+        window.addEventListener("beforeprint", recordPrint);
+        document.getElementById("printBtn").onclick = () => {
+            recordPrint();
+            window.print();
+        };
 
         fetch("/api/questions")
             .then((r) => { if (!r.ok) throw new Error("加载失败"); return r.json(); })

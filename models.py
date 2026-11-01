@@ -36,3 +36,20 @@ class Question(Base):
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), index=True
     )
+
+
+class PracticeRecord(Base):
+    """一次打印练习卷里的一道题（出卷历史 / 练过几次都从这张表查）。
+
+    paper_id 把同一次打印的题聚成一组（uuid，同批入库共用）。题目删除后
+    记录保留——历史里少一个可点的对象而已，"哪天练过"仍然成立。
+    """
+
+    __tablename__ = "practice_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    paper_id = Column(String(40), nullable=False, index=True)
+    question_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), index=True
+    )

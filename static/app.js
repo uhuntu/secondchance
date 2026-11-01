@@ -185,6 +185,15 @@ function buildCard(q, index) {
         badge.title = "AI 根据批改痕迹判断，仅供参考；做对了就取消勾选";
         choice.append(badge);
     }
+    if (q.practice_count > 0) {
+        const practiced = document.createElement("span");
+        practiced.className = "practice-meta";
+        practiced.textContent = `练过 ${q.practice_count} 次`;
+        practiced.title = q.last_practiced_at
+            ? `上次练习：${new Date(q.last_practiced_at).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })}`
+            : "上次练习时间未知";
+        choice.append(practiced);
+    }
     body.appendChild(choice);
 
     const details = document.createElement("details");
@@ -1114,5 +1123,57 @@ document.getElementById("lightbox").onclick = (e) => {
     if (e.target.id === "lightbox") e.target.hidden = true;
 };
 
+// 出卷历史：打印时 paper.html 记的那笔，在这里回看。加载失败就静默——历史是附赠品。
+function loadHistory() {
+    const list = document.getElementById("historyList");
+    if (!list) return;
+    fetch("/api/prints")
+        .then((r) => (r.ok ? r.json() : []))
+        .then((papers) => {
+            list.innerHTML = "";
+            if (!papers.length) {
+                const empty = document.createElement("p");
+                empty.className = "history-empty";
+                empty.textContent = "还没有打印过练习卷。每次打印会自动记录在这里，不用做任何操作。";
+                list.appendChild(empty);
+                return;
+            }
+            papers.forEach((paper) => {
+                const row = document.createElement("div");
+                row.className = "history-item";
+
+                const meta = document.createElement("div");
+                meta.className = "history-meta";
+                const day = document.createElement("strong");
+                day.textContent = new Date(paper.created_at).toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+                const count = document.createElement("span");
+                count.textContent = `${paper.count} 题`;
+                meta.append(day, count);
+                const kps = [...new Set(paper.questions.map((q) => q.knowledge_point).filter(Boolean))];
+                if (kps.length) {
+                    const kpLine = document.createElement("span");
+                    kpLine.className = "history-kps";
+                    kpLine.textContent = kps.join("、");
+                    meta.append(kpLine);
+                }
+
+                const thumbs = document.createElement("div");
+                thumbs.className = "history-thumbs";
+                paper.questions.slice(0, 6).forEach((q) => {
+                    const thumb = document.createElement("img");
+                    thumb.src = q.image_url;
+                    thumb.alt = "错题缩略图";
+                    thumb.loading = "lazy";
+                    thumbs.appendChild(thumb);
+                });
+
+                row.append(meta, thumbs);
+                list.appendChild(row);
+            });
+        })
+        .catch(() => {});
+}
+
 initKpList();
+loadHistory();
 refresh();

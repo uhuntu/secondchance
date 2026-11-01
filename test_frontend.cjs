@@ -20,11 +20,11 @@ function harness(script, search = '') {
     let opened;
     const context = vm.createContext({ document, URLSearchParams, location: { search },
         sessionStorage: { getItem() { return null; }, setItem() {} },
-        window: { open(url) { opened = url; } },
+        window: { open(url) { opened = url; }, addEventListener() {} },
         fetch: () => new Promise(() => {}), setTimeout, clearTimeout,
     });
     vm.runInContext(script, context);
-    return { run: code => vm.runInContext(code, context), elements, opened: () => opened };
+    return { run: code => vm.runInContext(code, context), elements, opened: () => opened, context };
 }
 
 const app = fs.readFileSync('static/app.js', 'utf8');
@@ -61,4 +61,33 @@ test('print scope never falls back to entire library for missing or empty select
 test('scanner button stays hidden where the browser offers no camera API (phone over LAN http)', () => {
     const h = harness(app);
     assert.equal(h.elements.get('scannerBtn').hidden, true);
+});
+
+test('printing records exactly the questions on the paper; button click and Ctrl+P record once', () => {
+    const h = harness(paper, '?ids=2');
+    h.run('allQuestions = [{id:1}, {id:2}];');
+    const posts = [];
+    h.context.fetch = (url, options) => {
+        posts.push({ url, body: JSON.parse(options.body) });
+        return Promise.resolve({ ok: true });
+    };
+    // beforeprint（Ctrl+P）和按钮点击都会触发 recordPrint，只允许记一笔
+    h.run('recordPrint(); recordPrint();');
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].url, '/api/prints');
+    assert.deepEqual(posts[0].body, { question_ids: [2] });
+});
+
+test('card shows practice count only when the question has been practiced', () => {
+    const h = harness(app);
+    h.run(`questionsCache = [
+        {id: 5, practice_count: 3, last_practiced_at: '2026-11-01T10:00:00+00:00'},
+        {id: 6},
+    ];`);
+    h.run('var cards = questionsCache.map((q, i) => buildCard(q, i + 1));');
+    const texts = h.run('cards.map(card => [...card.children[1].children[0].children] '
+        + '.map(c => typeof c === "string" ? c : c.textContent).filter(Boolean))');
+    // 跨 vm realm 的数组原型不同，deepStrictEqual 会拒绝：用序列化比较
+    assert.equal(JSON.stringify(texts[0]), JSON.stringify(['第 1 题 · 加入本次重练', '练过 3 次']));
+    assert.equal(JSON.stringify(texts[1]), JSON.stringify(['第 2 题 · 加入本次重练']));
 });
