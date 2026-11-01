@@ -445,3 +445,75 @@ def test_deleting_a_question_keeps_the_page_while_siblings_exist(api):
         api.client.delete(f"/api/questions/{question['id']}")
     # 最后一道删完，原图才被清掉
     assert api.client.get(source_url).status_code == 404
+
+
+def _fake_split_plan(knowledge_flags, wrong_flags=(False, True)):
+    """替身 split_plan：固定两道题，AI 的判断/知识点按参数给，不碰真实网关。"""
+
+    def fake(image, geometric_lines):
+        height = image.shape[0]
+        return (
+            [height // 3, height * 2 // 3],
+            True,
+            list(wrong_flags),
+            [],
+            list(knowledge_flags),
+        )
+
+    return fake
+
+
+def test_ai_knowledge_points_fill_new_questions(api, monkeypatch):
+    """AI 建议的知识点随切题直接入库；用户手填后重切不被覆盖。"""
+    monkeypatch.setattr(
+        app_module.ai_split, "split_plan",
+        _fake_split_plan(["小数乘法", "小数除法"]),
+    )
+    payload = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    questions = payload["questions"]
+    assert [q["knowledge_point"] for q in questions] == ["小数乘法", "小数除法"]
+    assert questions[1]["suspected_wrong"] is True
+
+    # 手填之后编辑器重切：保留手填值（编辑器保存不带 AI 建议）
+    first = questions[0]
+    api.client.put(
+        f"/api/questions/{first['id']}", json={"knowledge_point": "我的错因"}
+    )
+    api.client.post(f"/api/questions/{first['id']}/split", json={"lines": []})
+    kept = api.client.get(f"/api/questions/{first['id']}").json()
+    assert kept["knowledge_point"] == "我的错因"
+
+
+def test_judge_fills_missing_knowledge_points_only(api, monkeypatch):
+    """AI 识别错题顺带补知识点：空着的填上，已有标注不动。"""
+    monkeypatch.setattr(
+        app_module.ai_split, "split_plan",
+        _fake_split_plan(["密铺", None], wrong_flags=(True, False)),
+    )
+    payload = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    first, second = payload["questions"]
+    assert first["knowledge_point"] == "密铺" and second["knowledge_point"] == ""
+    api.client.put(
+        f"/api/questions/{first['id']}", json={"knowledge_point": "我的错因"}
+    )
+
+    monkeypatch.setattr(
+        app_module.ai_split, "split_plan",
+        _fake_split_plan(["密铺", "可能性"], wrong_flags=(True, False)),
+    )
+    result = api.client.post(f"/api/questions/{first['id']}/judge").json()
+    assert result["updated"] is True and result["tagged"] == 1
+
+    listed = {q["id"]: q for q in api.client.get("/api/questions").json()}
+    assert listed[first["id"]]["knowledge_point"] == "我的错因"
+    assert listed[first["id"]]["suspected_wrong"] is True
+    assert listed[second["id"]]["knowledge_point"] == "可能性"
+    assert listed[second["id"]]["suspected_wrong"] is False

@@ -7,24 +7,37 @@ import ocr_split
 def test_parse_markers():
     fenced = (
         '```json\n{"questions": ['
-        '{"marker": "2.", "text": "（北京市·东城区）", "wrong": true}, '
-        '{"marker": "3.", "text": "线面是福建省", "wrong": false}], '
+        '{"marker": "2.", "text": "（北京市·东城区）", "wrong": true, "knowledge": "小数除法"}, '
+        '{"marker": "3.", "text": "线面是福建省", "wrong": false, "knowledge": "循环小数"}], '
         '"handwriting": [{"box": [10, 20, 300, 120]}]}\n```'
     )
     assert ai_split._parse_markers(fenced) == (
         [
-            {"text": "2.（北京市·东城区）", "wrong": True},
-            {"text": "3.线面是福建省", "wrong": False},
+            {"text": "2.（北京市·东城区）", "wrong": True, "knowledge": "小数除法"},
+            {"text": "3.线面是福建省", "wrong": False, "knowledge": "循环小数"},
         ],
         [[10, 20, 300, 120]],
     )
+    # 缺 knowledge / 空串 / 非字符串都归 None
+    missing = (
+        '{"questions": ['
+        '{"marker": "1.", "text": "第一题", "wrong": true, "knowledge": "   "}, '
+        '{"marker": "2.", "text": "第二题", "wrong": false, "knowledge": 3}]}'
+    )
+    assert ai_split._parse_markers(missing) == (
+        [
+            {"text": "1.第一题", "wrong": True, "knowledge": None},
+            {"text": "2.第二题", "wrong": False, "knowledge": None},
+        ],
+        [],
+    )
     # 旧格式（裸数组，没有手写框）兼容
     assert ai_split._parse_markers('废话 [ {"marker": "5.", "text": "（龙岩市"} ] 废话') == (
-        [{"text": "5.（龙岩市", "wrong": None}],
+        [{"text": "5.（龙岩市", "wrong": None, "knowledge": None}],
         [],
     )
     assert ai_split._parse_markers('["1.第一题"]') == (
-        [{"text": "1.第一题", "wrong": None}],
+        [{"text": "1.第一题", "wrong": None, "knowledge": None}],
         [],
     )
     assert ai_split._parse_markers("没有数组") is None
@@ -37,20 +50,20 @@ def test_parse_markers_drops_section_headers():
     content = (
         '{"questions": ['
         '{"marker": "一、", "text": "精心选择。", "section": true, "wrong": null},'
-        '{"marker": "1.", "text": "3.66÷0.32", "section": false, "wrong": true},'
+        '{"marker": "1.", "text": "3.66÷0.32", "section": false, "wrong": true, "knowledge": "小数除法"},'
         '{"marker": "2.", "text": "(北京市·东", "section": false, "wrong": false}],'
         '"handwriting": []}'
     )
     assert ai_split._parse_markers(content) == (
         [
-            {"text": "1.3.66÷0.32", "wrong": True},
-            {"text": "2.(北京市·东", "wrong": False},
+            {"text": "1.3.66÷0.32", "wrong": True, "knowledge": "小数除法"},
+            {"text": "2.(北京市·东", "wrong": False, "knowledge": None},
         ],
         [],
     )
     # 旧格式（没有 section 字段）照常保留
     assert ai_split._parse_markers('[{"marker": "5.", "text": "（龙岩市"}]') == (
-        [{"text": "5.（龙岩市", "wrong": None}],
+        [{"text": "5.（龙岩市", "wrong": None, "knowledge": None}],
         [],
     )
 
@@ -79,17 +92,18 @@ def test_ocr_filter_starts_finds_margin_numbers():
 
 def test_match_markers_handles_misreads_and_stays_in_order():
     markers = [
-        {"text": "一、精心选择。", "wrong": None},
-        {"text": "1.3.66÷0.32的商", "wrong": True},
-        {"text": "2.（北京市·东城区）在计算", "wrong": False},
-        {"text": "4.A×1.1=B÷1.1", "wrong": True},
-        {"text": "6.（莆田市·涵江区）玲玲", "wrong": False},
+        {"text": "一、精心选择。", "wrong": None, "knowledge": None},
+        {"text": "1.3.66÷0.32的商", "wrong": True, "knowledge": "小数除法"},
+        {"text": "2.（北京市·东城区）在计算", "wrong": False, "knowledge": "循环小数"},
+        {"text": "4.A×1.1=B÷1.1", "wrong": True, "knowledge": None},
+        {"text": "6.（莆田市·涵江区）玲玲", "wrong": False, "knowledge": "小数乘法"},
     ]
     starts = ai_split._match_markers(_strips(), markers)
     # 2 和 4、6 的行首被 OCR 误读，靠"数字对上"兜底；顺序不乱，
-    # 对错判断跟着各自的行走
-    assert [(y, w) for y, _x, w in starts] == [
-        (156, None), (198, True), (282, False), (683, True), (1152, False)
+    # 对错判断和知识点跟着各自的行走
+    assert [(y, w, k) for y, _x, w, k in starts] == [
+        (156, None, None), (198, True, "小数除法"), (282, False, "循环小数"),
+        (683, True, None), (1152, False, "小数乘法"),
     ]
 
 
@@ -133,18 +147,19 @@ def test_merged_lines_with_ai_drops_junk_inside_spans(monkeypatch):
         ai_split, "ai_markers",
         lambda img: (
             [
-                {"text": "一、第一块", "wrong": True},
-                {"text": "1.第二块", "wrong": False},
-                {"text": "2.第三块", "wrong": True},
+                {"text": "一、第一块", "wrong": True, "knowledge": None},
+                {"text": "1.第二块", "wrong": False, "knowledge": "小数乘法"},
+                {"text": "2.第三块", "wrong": True, "knowledge": "多边形的面积"},
             ],
             [],  # 无手写框
         ),
     )
-    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, geometric)
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(image, geometric)
     # 几何线全部让位给 AI 题界：3 道题 3 条线，调用方丢弃第一片（页眉）
     assert ai_active is True
     assert len(lines) == 3
     assert wrong_flags == [True, False, True]
+    assert knowledge_flags == [None, "小数乘法", "多边形的面积"]
     assert hw_boxes == []
     assert lines[0] < 120 and 300 < lines[1] < 440 and 640 < lines[2] < 780
     assert ai_split.merged_lines(image, geometric) == lines
@@ -158,8 +173,9 @@ def test_split_plan_without_ai_keeps_geometric_union(monkeypatch):
     strips = [(84, 80, "1.第一块", 0.9)]
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: strips)
     monkeypatch.setattr(ai_split, "ai_markers", lambda img: None)
-    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, geometric)
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(image, geometric)
     assert ai_active is False and wrong_flags == [] and hw_boxes == []
+    assert knowledge_flags == []
     assert lines == ocr_split.merged_lines(image, geometric)
 
 
@@ -171,8 +187,9 @@ def test_merged_lines_degrades_without_api_key(monkeypatch):
     monkeypatch.setattr(ai_split, "_api_key", lambda: None)
     assert ai_split.ai_markers(image) is None
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: [])
-    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, geometric)
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(image, geometric)
     assert ai_active is False and wrong_flags == [] and hw_boxes == []
+    assert knowledge_flags == []
     assert lines == ocr_split.merged_lines(image, geometric)
 
 

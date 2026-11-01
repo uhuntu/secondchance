@@ -287,7 +287,13 @@ function judgePage(representative) {
                 showMsg("这一页的切法和 AI 识别的题数对不上，请在编辑器里重新自动切后再识别", false);
                 return;
             }
-            showMsg(data.suspected ? `识别出 ${data.suspected} 道疑似错题，已标记` : "AI 看了一遍：这页没有发现明显的错题", true);
+            const tagged = data.tagged ? `，顺带给 ${data.tagged} 道题补了知识点` : "";
+            showMsg(
+                data.suspected
+                    ? `识别出 ${data.suspected} 道疑似错题，已标记${tagged}`
+                    : `AI 看了一遍：这页没有发现明显的错题${tagged}`,
+                true,
+            );
             refresh();
         })
         .catch(() => showMsg("识别失败", false));

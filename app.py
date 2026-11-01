@@ -224,6 +224,7 @@ def _apply_split(
     rename_group_from: str | None = None,
     wrong_flags: list[bool | None] | None = None,
     ink_boxes: list[list[list[int]]] | None = None,
+    knowledge_points: list[str | None] | None = None,
 ) -> list[Question]:
     """把一页的题目整体换成新的切片集合。
 
@@ -235,6 +236,9 @@ def _apply_split(
 
     wrong_flags：AI 对每道题的对错判断（与 crop_paths 对齐）。编辑器保存
     不带它——重切不动 AI 的判断。
+
+    knowledge_points：AI 对每道题的知识点建议（与 crop_paths 对齐）。只往
+    空着的知识点里填，用户手填的标注永不覆盖；编辑器保存不带它。
     """
     group = (
         _group_of(db, rename_group_from) if rename_group_from else _group_of(db, source_name)
@@ -251,10 +255,22 @@ def _apply_split(
                     item.suspected_wrong = bool(wrong_flags[index])
                 if ink_boxes is not None and index < len(ink_boxes):
                     item.ink_boxes = json.dumps(ink_boxes[index])
+                if (
+                    knowledge_points is not None
+                    and index < len(knowledge_points)
+                    and knowledge_points[index]
+                    and not item.knowledge_point
+                ):
+                    item.knowledge_point = knowledge_points[index]
             else:
                 db.delete(item)
         for index, crop_path in enumerate(crop_paths[len(group):]):
             new_index = len(group) + index
+            suggestion = (
+                knowledge_points[new_index]
+                if knowledge_points and len(knowledge_points) > new_index
+                else None
+            )
             db.add(
                 Question(
                     subject=question.subject,
@@ -263,6 +279,7 @@ def _apply_split(
                     crop_reviewed=True,
                     suspected_wrong=bool(wrong_flags[new_index]) if wrong_flags and len(wrong_flags) > new_index else False,
                     ink_boxes=json.dumps(ink_boxes[new_index]) if ink_boxes and len(ink_boxes) > new_index else "[]",
+                    knowledge_point=suggestion or "",
                 )
             )
         db.commit()
@@ -362,10 +379,14 @@ def _create_page(
         analysis = analyze(raw_path)
         if page_points is not None:
             image = warp_with_corners(analysis.image, page_points)
-            lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, suggest_split_lines(image))
+            lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
+                image, suggest_split_lines(image)
+            )
         else:
             image = analysis.image
-            lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(image, analysis.lines)
+            lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
+                image, analysis.lines
+            )
         page_detected = analysis.page_detected
         lines = _validate_lines(lines, image.shape[0])
         page_path = _save_page(image, stem)
@@ -395,6 +416,7 @@ def _create_page(
         questions = _apply_split(
             db, representative, source_name, crop_paths,
             wrong_flags=wrong_flags, ink_boxes=ink_boxes_per_crop,
+            knowledge_points=knowledge_flags,
         )
     except HTTPException:
         _delete_file(page_path)
@@ -491,7 +513,9 @@ def straighten_question(
         straightened = warp_with_corners(raw, payload.points)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(straightened, suggest_split_lines(straightened))
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
+        straightened, suggest_split_lines(straightened)
+    )
     _validate_lines(lines, straightened.shape[0])
     # 先写新图再删旧图：中途失败也不会把这一组的原图弄丢。
     new_path = _save_page(straightened, f"{page_path.stem}_m{uuid.uuid4().hex[:8]}")
@@ -506,7 +530,7 @@ def straighten_question(
         questions = _apply_split(
             db, question, new_name, crop_paths,
             rename_group_from=source_name, wrong_flags=wrong_flags,
-            ink_boxes=ink_boxes_per_crop,
+            ink_boxes=ink_boxes_per_crop, knowledge_points=knowledge_flags,
         )
     except HTTPException:
         _delete_file(new_path)
@@ -539,7 +563,7 @@ def suggest_question(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        lines, ai_active, _wrong_flags, hw_boxes = ai_split.split_plan(
+        lines, ai_active, _wrong_flags, hw_boxes, _knowledge_flags = ai_split.split_plan(
             image, suggest_split_lines(image)
         )
         return {
@@ -558,6 +582,7 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
 
     判断按页内位置落到切片上：一张切片里套着几道 AI 识别的题，
     就继承它们的判断（老页面的粗切片里有一道错，整片标疑似）。
+    顺带把 AI 的知识点建议填进空着的知识点；已有标注不动。
     AI 没参与（没配 key、网络失败）时不动任何标记。
     """
     question = db.get(Question, question_id)
@@ -570,13 +595,13 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        lines, ai_active, wrong_flags, hw_boxes = ai_split.split_plan(
+        lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
             image, suggest_split_lines(image)
         )
     except HTTPException:
-        return {"updated": False, "suspected": 0, "ai_active": False}
+        return {"updated": False, "suspected": 0, "tagged": 0, "ai_active": False}
     if not ai_active:
-        return {"updated": False, "suspected": 0, "ai_active": False}
+        return {"updated": False, "suspected": 0, "tagged": 0, "ai_active": False}
 
     group = _group_of(db, question.source_image_path)
     # 每张切片按页内位置圈定范围，套进来的 AI 判断取"或"
@@ -587,17 +612,23 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
     bounds = [*tops, image.shape[0] + 1]
 
     suspected = 0
+    tagged = 0
     for index, item in enumerate(group):
         top, bottom = bounds[index], bounds[index + 1]
         inside = [
-            bool(w)
-            for line, w in zip(lines, wrong_flags)
+            (bool(w), k)
+            for line, w, k in zip(lines, wrong_flags, knowledge_flags)
             if top <= line < bottom
         ]
         if inside:
-            item.suspected_wrong = any(inside)
-            if any(inside):
+            item.suspected_wrong = any(w for w, _k in inside)
+            if item.suspected_wrong:
                 suspected += 1
+            if not item.knowledge_point:
+                suggestion = next((k for _w, k in inside if k), None)
+                if suggestion:
+                    item.knowledge_point = suggestion
+                    tagged += 1
     # 顺带把 AI 的手写痕迹框按题存下来（练习卷去手写用）。
     # 只在 AI 的题数和现存切片数一致时做，对不上的老页面请先重新自动切。
     if len(lines) == len(group):
@@ -608,7 +639,7 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
             if index < len(per_crop):
                 item.ink_boxes = json.dumps(per_crop[index])
     db.commit()
-    return {"updated": True, "suspected": suspected, "ai_active": True}
+    return {"updated": True, "suspected": suspected, "tagged": tagged, "ai_active": True}
 
 
 @app.get("/api/questions/{question_id}/page")
