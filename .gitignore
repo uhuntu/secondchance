@@ -40,3 +40,4 @@ cubes_figure_preview.png
 
 # AI tool working memory (agent notes, not app code)
 .workbuddy/
+.zcode/
