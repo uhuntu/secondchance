@@ -353,6 +353,25 @@ def merged_lines(image: np.ndarray, geometric_lines: list[int]) -> list[int]:
     return split_plan(image, geometric_lines)[0]
 
 
+def boxes_per_bands(
+    boxes: list[list[int]], bands: list[tuple[int, int]]
+) -> list[list[list[int]]]:
+    """把整页坐标的手写框按每张切片在整页里的范围分下去，转成切片内坐标。
+
+    bands[i] = (顶, 底) 是第 i 张切片覆盖的整页 y 范围；跨界的框会被
+    裁剪进相邻两片（两片都会清框内的笔迹）。
+    """
+    per_crop: list[list[list[int]]] = [[] for _ in bands]
+    for x1, y1, x2, y2 in boxes:
+        for index, (top, bottom) in enumerate(bands):
+            if y2 <= top or y1 >= bottom:
+                continue
+            per_crop[index].append(
+                [x1, max(y1, top) - top, x2, min(y2, bottom) - top]
+            )
+    return per_crop
+
+
 def boxes_per_crop(
     boxes: list[list[int]], lines: list[int], height: int, skip_first: bool
 ) -> list[list[list[int]]]:
@@ -366,13 +385,5 @@ def boxes_per_crop(
     crops = list(zip(bounds, bounds[1:]))
     if skip_first and crops:
         crops = crops[1:]
-    per_crop: list[list[list[int]]] = [[] for _ in crops]
-    for x1, y1, x2, y2 in boxes:
-        for index, (top, bottom) in enumerate(crops):
-            if y2 <= top or y1 >= bottom:
-                continue
-            per_crop[index].append(
-                [x1, max(y1, top) - top, x2, min(y2, bottom) - top]
-            )
-    return per_crop
+    return boxes_per_bands(boxes, crops)
 

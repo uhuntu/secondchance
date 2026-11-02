@@ -463,6 +463,26 @@ def _fake_split_plan(knowledge_flags, wrong_flags=(False, True)):
     return fake
 
 
+def _fake_split_plan_at(ratios, wrong_flags=(False,) * 3, knowledge=(None,) * 3):
+    """替身 split_plan：切线按页面高度的比例给（不依赖实际页高）。
+
+    比例 [0.21, 0.57, 0.68] 表示：页眉占 21%，三道题分别占 36%/11%/32%
+    —— 第 2 题比页眉还矮，正是判断容易贴错题的形状。
+    """
+
+    def fake(image, geometric_lines):
+        height = image.shape[0]
+        return (
+            [int(height * ratio) for ratio in ratios],
+            True,
+            list(wrong_flags),
+            [],
+            list(knowledge),
+        )
+
+    return fake
+
+
 def test_ai_knowledge_points_fill_new_questions(api, monkeypatch):
     """AI 建议的知识点随切题直接入库；用户手填后重切不被覆盖。"""
     monkeypatch.setattr(
@@ -517,6 +537,46 @@ def test_judge_fills_missing_knowledge_points_only(api, monkeypatch):
     assert listed[first["id"]]["suspected_wrong"] is True
     assert listed[second["id"]]["knowledge_point"] == "可能性"
     assert listed[second["id"]]["suspected_wrong"] is False
+
+
+def test_judge_lands_on_the_right_question_when_header_is_tall(api, monkeypatch):
+    """页眉被丢弃后，AI 的判断和知识点仍要落到正确的题上。
+
+    页眉比某道题高时，按切片高度累加反推位置会整体错位一道题，
+    判断就贴到隔壁题上去了（AI 说第 2 题做错，徽标却挂到第 3 题）。
+    """
+    # 页眉 21%，第 1 题 36%，第 2 题只有 11%（比页眉还矮），第 3 题 32%
+    ratios = [0.21, 0.57, 0.68]
+    monkeypatch.setattr(
+        app_module.ai_split, "split_plan",
+        _fake_split_plan_at(ratios),
+    )
+    payload = api.client.post(
+        "/api/pages",
+        data={"subject": "数学"},
+        files={"photo": ("page.jpg", _blocky_page_jpeg(), "image/jpeg")},
+    ).json()
+    questions = payload["questions"]
+    assert len(questions) == 3
+
+    # AI 说只有第 2 题做错，三道题的知识点各不相同
+    monkeypatch.setattr(
+        app_module.ai_split, "split_plan",
+        _fake_split_plan_at(
+            ratios, wrong_flags=(False, True, False), knowledge=("密铺", "平移", "旋转")
+        ),
+    )
+    result = api.client.post(f"/api/questions/{questions[0]['id']}/judge").json()
+    assert result["updated"] is True and result["suspected"] == 1
+
+    listed = {q["id"]: q for q in api.client.get("/api/questions").json()}
+    # 每道题拿到的是它自己的知识点和对错判断
+    assert listed[questions[0]["id"]]["knowledge_point"] == "密铺"
+    assert listed[questions[0]["id"]]["suspected_wrong"] is False
+    assert listed[questions[1]["id"]]["knowledge_point"] == "平移"
+    assert listed[questions[1]["id"]]["suspected_wrong"] is True
+    assert listed[questions[2]["id"]]["knowledge_point"] == "旋转"
+    assert listed[questions[2]["id"]]["suspected_wrong"] is False
 
 
 def test_print_recording_and_history(api):

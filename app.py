@@ -217,6 +217,76 @@ def _load_page_split(db: Session, source_name: str) -> tuple[list[int], bool] | 
         return None
 
 
+def _crop_ranges(
+    db: Session, source_name: str, group: list[Question], page_height: int
+) -> list[tuple[int, int]]:
+    """每道题切片在整页里的 y 范围 [(顶, 底), ...]，顺序同 group。
+
+    优先按存下来的切法还原（page_splits）：那是这一页当初怎么切的记录。
+    页眉被丢弃时（skip_first）第一道题并不从页面顶端开始，靠累加切片高度
+    反推位置会整体错位一道题——判断和知识点就贴到隔壁题上了。
+
+    切片是按切线从整页上裁下来的，高度正好等于对应分段的高度；中途删过
+    某道题时切片会少一个，就靠高度把它对回原来的分段。
+
+    实在对不上时退回按高度推算：切片一路铺到页底，页顶没覆盖到的那段
+    就是被丢弃的页眉。
+    """
+    heights: list[int] = []
+    for item in group:
+        crop = cv2.imread(str(_resolve_upload(item.image_path)))
+        heights.append(int(crop.shape[0]) if crop is not None else 0)
+
+    stored = _load_page_split(db, source_name)
+    if stored is not None:
+        lines, skip_first = stored
+        edges = [
+            0,
+            *[int(line) for line in sorted(lines) if 0 < int(line) < page_height],
+            page_height,
+        ]
+        bands = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+        if skip_first and len(bands) > 1:
+            bands = bands[1:]
+        if len(bands) == len(group):
+            return bands
+        aligned = _align_bands(bands, heights)
+        if aligned is not None:
+            return aligned
+
+    offset = max(0, page_height - sum(heights))
+    ranges: list[tuple[int, int]] = []
+    cursor = offset
+    for height in heights:
+        ranges.append((cursor, cursor + height))
+        cursor += height
+    return ranges
+
+
+def _align_bands(
+    bands: list[tuple[int, int]], heights: list[int]
+) -> list[tuple[int, int]] | None:
+    """把现存切片按高度对回原分段：切片高度 = 分段高度，顺序不变。
+
+    中途删过题时切片比分段少，按顺序找高度相同的那个即可；
+    对不上返回 None，交给调用方退回推算。
+    """
+    aligned: list[tuple[int, int]] = []
+    cursor = 0
+    for height in heights:
+        found = None
+        for index in range(cursor, len(bands)):
+            top, bottom = bands[index]
+            if bottom - top == height:
+                found = index
+                break
+        if found is None:
+            return None
+        aligned.append(bands[found])
+        cursor = found + 1
+    return aligned
+
+
 def _group_of(db: Session, source_image_path: str) -> list[Question]:
     return (
         db.query(Question)
@@ -625,17 +695,14 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
         return {"updated": False, "suspected": 0, "tagged": 0, "ai_active": False}
 
     group = _group_of(db, question.source_image_path)
-    # 每张切片按页内位置圈定范围，套进来的 AI 判断取"或"
-    tops = [0]
-    for item in group[:-1]:
-        crop = cv2.imread(str(_resolve_upload(item.image_path)))
-        tops.append(tops[-1] + (int(crop.shape[0]) if crop is not None else 0))
-    bounds = [*tops, image.shape[0] + 1]
+    # 每张切片在整页里的真实范围：页眉被丢弃时切片不从页面顶端开始，
+    # 累加切片高度反推位置会整体错位一道题，判断就贴到隔壁题上了。
+    ranges = _crop_ranges(db, question.source_image_path, group, int(image.shape[0]))
 
     suspected = 0
     tagged = 0
     for index, item in enumerate(group):
-        top, bottom = bounds[index], bounds[index + 1]
+        top, bottom = ranges[index]
         inside = [
             (bool(w), k)
             for line, w, k in zip(lines, wrong_flags, knowledge_flags)
@@ -653,9 +720,7 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
     # 顺带把 AI 的手写痕迹框按题存下来（练习卷去手写用）。
     # 只在 AI 的题数和现存切片数一致时做，对不上的老页面请先重新自动切。
     if len(lines) == len(group):
-        per_crop = ai_split.boxes_per_crop(
-            hw_boxes, lines, image.shape[0], skip_first=True
-        )
+        per_crop = ai_split.boxes_per_bands(hw_boxes, ranges)
         for index, item in enumerate(group):
             if index < len(per_crop):
                 item.ink_boxes = json.dumps(per_crop[index])
