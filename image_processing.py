@@ -421,6 +421,73 @@ def suggest_split_lines(image: np.ndarray | Path | str) -> list[int]:
     return lines
 
 
+def enhance_print(image: np.ndarray) -> np.ndarray:
+    """扫描仪式增强：纸底拉成纯白、墨迹加深，打印不再灰蒙蒙。
+
+    手机照片的纸面是灰绿色的，直接打印纸底会把字"垫"得很浅。做法：
+    用形态学闭运算估出每处的纸面底色（笔画太细撑不过大核，会被抹平），
+    逐像素除以底色——纸变纯白、光照不均同时被拉平。墨迹深浅每张照片
+    差异很大（曝光、对比度都不同），固定曲线会把浅墨"洗白"：所以灰度
+    通路用 Otsu 在归一化灰度上找这张图的墨/纸分界，墨侧压黑、纸侧
+    拉白，分界附近 50 级灰度做渐变防锯齿。彩色笔迹（红勾、红叉）走
+    保留色彩的通路，色相不变、对比更好。
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (61, 61))
+    background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+    background = cv2.medianBlur(background, 21)  # 去掉闭运算的块状边缘
+    background = np.clip(background, 1, 255).astype(np.float32)
+
+    normg = np.clip(gray.astype(np.float32) / background * 255.0, 0, 255)
+    # 纸张外的桌面/阴影：比纸面暗一大截、开运算(15px)后还成片、连着
+    # 图像边框——文字笔画太细活不过开运算，纸内的粗笔迹不贴边，都
+    # 不会误伤。它们必须先从 Otsu 统计里剔掉，否则会把分界拉偏。
+    bright_ref = float(np.percentile(gray, 90))
+    dark = (gray <= bright_ref - 60).astype(np.uint8)
+    dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(dark)
+    exterior = np.zeros(gray.shape, dtype=bool)
+    h, w = gray.shape
+    for i in range(1, num):
+        x, y, bw, bh, _area = (stats[i, j] for j in range(5))
+        if x == 0 or y == 0 or x + bw >= w or y + bh >= h:
+            exterior |= labels == i
+
+    # Otsu 找墨/纸分界；图像基本没字时直方图单峰，Otsu 会切在噪声上，
+    # 墨迹占比 guard 住就退回温和曲线，宁可浅也不撒黑斑。另外完美双峰
+    # 时 Otsu 会退化在墨簇边缘（阈值=墨值），ramp 以它为中心会把墨映射
+    # 成半灰——所以把分界重定位到墨簇上缘与纸簇中位数的正中间。
+    norm_u8 = normg.astype(np.uint8)
+    inside = norm_u8[~exterior]
+    threshold, _ = cv2.threshold(inside, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    ink_ratio = float((inside <= threshold).mean())
+    paper_pixels = inside[inside > threshold]
+    if paper_pixels.size:
+        threshold = (threshold + float(np.median(paper_pixels))) / 2.0
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    colored = hsv[:, :, 1] > 70
+
+    # 彩色通路：各通道同除底色 + 压暗，保留色相（红笔更红更深）。
+    # 先裁到 [0,1] 再做幂——负数幂会产生 NaN 把整图变黑。
+    color_norm = np.clip(
+        ((image.astype(np.float32) / background[:, :, None] * 255.0 - 40.0)
+         * (255.0 / (210.0 - 40.0))) / 255.0,
+        0.0, 1.0,
+    )
+    color_out = color_norm ** 2.2 * 255.0
+    if 60 <= threshold <= 245 and 0.005 <= ink_ratio <= 0.60:
+        # 灰度通路：分界附近 ±25 做渐变——墨侧(低于分界)压黑、纸侧拉白
+        low, high = threshold - 25.0, threshold + 25.0
+        ramp = np.clip((normg - low) / (high - low), 0.0, 1.0)
+        gray_out = ramp * 255.0
+        out = np.where(colored[:, :, None], color_out, gray_out[:, :, None])
+    else:
+        out = color_out
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    out[exterior] = 255
+    return out
+
+
 def remove_handwriting(
     image: np.ndarray, extra_regions: list[list[int]] | None = None
 ) -> np.ndarray:

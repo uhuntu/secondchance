@@ -9,6 +9,7 @@ from PIL import Image
 from image_processing import (
     analyze,
     crop_by_lines,
+    enhance_print,
     remove_handwriting,
     heic_to_jpeg_bytes,
     straighten,
@@ -118,6 +119,23 @@ def test_remove_handwriting_skips_pages_without_handwriting():
         cv2.line(page, (40, y), (200, y), (30, 30, 30), 3)
     cleaned = remove_handwriting(page)
     assert np.array_equal(cleaned, page)
+
+
+def test_enhance_print_whitens_paper_and_darkens_ink():
+    """打印增强：灰底拉白、墨迹加深；纸张外的阴影刷白不留黑边。"""
+    page = np.full((600, 400, 3), 215, dtype=np.uint8)   # 灰绿纸面（手机照）
+    for y in range(60, 500, 40):                          # 印刷体：深灰横线
+        cv2.line(page, (40, y), (300, y), (90, 90, 90), 3)
+    page[:, 380:] = 120                                   # 纸外桌面阴影
+
+    out = enhance_print(page)
+
+    # 纸面变纯白
+    assert out[300, 350, 0] >= 245
+    # 墨迹加深（90 的灰线压到接近黑）
+    assert out[60, 100, 0] < 60
+    # 纸外阴影被刷白，不会印出黑边
+    assert (out[:, 385:] == 255).all()
 
 
 def test_warp_with_corners_rejects_points_outside_the_photo():

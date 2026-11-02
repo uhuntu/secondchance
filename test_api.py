@@ -458,6 +458,7 @@ def _fake_split_plan(knowledge_flags, wrong_flags=(False, True)):
             list(wrong_flags),
             [],
             list(knowledge_flags),
+            [],
         )
 
     return fake
@@ -478,6 +479,7 @@ def _fake_split_plan_at(ratios, wrong_flags=(False,) * 3, knowledge=(None,) * 3)
             list(wrong_flags),
             [],
             list(knowledge),
+            [],
         )
 
     return fake

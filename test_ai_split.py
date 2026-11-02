@@ -17,6 +17,7 @@ def test_parse_markers():
             {"text": "3.线面是福建省", "wrong": False, "knowledge": "循环小数"},
         ],
         [[10, 20, 300, 120]],
+        [],
     )
     # 缺 knowledge / 空串 / 非字符串都归 None
     missing = (
@@ -30,14 +31,17 @@ def test_parse_markers():
             {"text": "2.第二题", "wrong": False, "knowledge": None},
         ],
         [],
+        [],
     )
     # 旧格式（裸数组，没有手写框）兼容
     assert ai_split._parse_markers('废话 [ {"marker": "5.", "text": "（龙岩市"} ] 废话') == (
         [{"text": "5.（龙岩市", "wrong": None, "knowledge": None}],
         [],
+        [],
     )
     assert ai_split._parse_markers('["1.第一题"]') == (
         [{"text": "1.第一题", "wrong": None, "knowledge": None}],
+        [],
         [],
     )
     assert ai_split._parse_markers("没有数组") is None
@@ -60,10 +64,12 @@ def test_parse_markers_drops_section_headers():
             {"text": "2.(北京市·东", "wrong": False, "knowledge": None},
         ],
         [],
+        [],
     )
     # 旧格式（没有 section 字段）照常保留
     assert ai_split._parse_markers('[{"marker": "5.", "text": "（龙岩市"}]') == (
         [{"text": "5.（龙岩市", "wrong": None, "knowledge": None}],
+        [],
         [],
     )
 
@@ -136,13 +142,14 @@ def _page_with_gaps(height: int = 1200, width: int = 800) -> np.ndarray:
     return page
 
 
-def test_merged_lines_with_ai_drops_junk_inside_spans(monkeypatch):
+def test_merged_lines_with_ai_keeps_geometric_union(monkeypatch):
     from image_processing import suggest_split_lines
 
     image = _page_with_gaps()
     geometric = suggest_split_lines(image)
     strips = [(84, 80, "一、第一块", 0.9), (424, 80, "1.第二块", 0.9), (764, 80, "2.第三块", 0.9)]
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: strips)
+    monkeypatch.setattr(ocr_split, "text_boxes", lambda img: strips)
     monkeypatch.setattr(
         ai_split, "ai_markers",
         lambda img: (
@@ -152,17 +159,32 @@ def test_merged_lines_with_ai_drops_junk_inside_spans(monkeypatch):
                 {"text": "2.第三块", "wrong": True, "knowledge": "多边形的面积"},
             ],
             [],  # 无手写框
+            [],  # 无空位框
         ),
     )
-    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(image, geometric)
-    # 几何线全部让位给 AI 题界：3 道题 3 条线，调用方丢弃第一片（页眉）
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags, blanks = ai_split.split_plan(image, geometric)
+    # AI 题界和几何线取并集：AI 常漏报，几何空白带补覆盖
     assert ai_active is True
-    assert len(lines) == 3
-    assert wrong_flags == [True, False, True]
-    assert knowledge_flags == [None, "小数乘法", "多边形的面积"]
+    # AI 认出的三道题都在，flags 跟着各自的线
+    assert [w for w in wrong_flags if w is not None] == [True, False, True]
+    assert [k for k in knowledge_flags if k is not None] == ["小数乘法", "多边形的面积"]
+    # 几何线独立于 AI 线时保留，flags 补 None
+    assert len(wrong_flags) >= 3 and wrong_flags.count(None) == len(lines) - 3
     assert hw_boxes == []
-    assert lines[0] < 120 and 300 < lines[1] < 440 and 640 < lines[2] < 780
+    # 三块的起始线都在（AI 线），块间的空白带线也在（几何线）
+    assert any(l < 120 for l in lines)
+    assert any(380 < l < 480 for l in lines)
+    assert any(720 < l < 820 for l in lines)
+    assert all(g in lines for g in geometric)
     assert ai_split.merged_lines(image, geometric) == lines
+
+    # AI 漏报时的兜底：几何线落在 AI 没认出的位置 → 保留，flags 补 None
+    lines2, _ai, wrong2, _hw, knowledge2, _blanks2 = ai_split.split_plan(image, geometric + [550])
+    assert 550 in lines2 and len(lines2) == len(lines) + 1
+    idx = lines2.index(550)
+    assert wrong2[idx] is None and knowledge2[idx] is None
+    # 其余线的 flags 不变
+    assert [w for i, w in enumerate(wrong2) if i != idx] == wrong_flags
 
 
 def test_split_plan_without_ai_keeps_geometric_union(monkeypatch):
@@ -173,9 +195,9 @@ def test_split_plan_without_ai_keeps_geometric_union(monkeypatch):
     strips = [(84, 80, "1.第一块", 0.9)]
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: strips)
     monkeypatch.setattr(ai_split, "ai_markers", lambda img: None)
-    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(image, geometric)
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags, blanks = ai_split.split_plan(image, geometric)
     assert ai_active is False and wrong_flags == [] and hw_boxes == []
-    assert knowledge_flags == []
+    assert knowledge_flags == [] and blanks == []
     assert lines == ocr_split.merged_lines(image, geometric)
 
 
@@ -187,9 +209,9 @@ def test_merged_lines_degrades_without_api_key(monkeypatch):
     monkeypatch.setattr(ai_split, "_api_key", lambda: None)
     assert ai_split.ai_markers(image) is None
     monkeypatch.setattr(ocr_split, "line_strips", lambda img: [])
-    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(image, geometric)
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags, blanks = ai_split.split_plan(image, geometric)
     assert ai_active is False and wrong_flags == [] and hw_boxes == []
-    assert knowledge_flags == []
+    assert knowledge_flags == [] and blanks == []
     assert lines == ocr_split.merged_lines(image, geometric)
 
 
@@ -198,6 +220,23 @@ def test_snap_to_blank_band_picks_nearest_center():
     assert ocr_split._snap_to_blank_band(bands, 400, 40) == 360
     assert ocr_split._snap_to_blank_band(bands, 700, 40) == 700  # 太远就不吸附
     assert ocr_split._snap_to_blank_band([], 100, 40) is None
+
+
+def test_dedupe_blanks_prefers_smaller_box():
+    # 大框罩住两个小框（连印刷文字一起盖）→ 大框丢、小框留
+    big = [50, 100, 550, 300]
+    small1 = [180, 150, 230, 290]
+    small2 = [380, 150, 440, 290]
+    assert ai_split.dedupe_blanks([big, small1, small2]) == [small1, small2]
+    # 完全相同的框只留一个
+    assert ai_split.dedupe_blanks([[10, 10, 60, 80], [10, 10, 60, 80]]) == [[10, 10, 60, 80]]
+    # 近似重复（两次输出差几个像素）→ 留一个
+    assert ai_split.dedupe_blanks([[100, 50, 160, 200], [98, 52, 162, 198]]) == [[100, 50, 160, 200]]
+    # 互不重叠的原样保留
+    assert ai_split.dedupe_blanks([[0, 0, 50, 50], [500, 500, 600, 600]]) == [
+        [0, 0, 50, 50],
+        [500, 500, 600, 600],
+    ]
 
 
 if __name__ == "__main__":

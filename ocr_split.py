@@ -114,6 +114,46 @@ def line_strips(image: np.ndarray) -> list[tuple[int, int, str, float]]:
         return []
 
 
+def text_boxes(image: np.ndarray) -> list[tuple[int, int, str, float]]:
+    """整页文字框：[(y, x, 文本, 置信度)]，不局限左侧；任何失败返回 []。
+
+    给 AI 匹配用：多栏卷子的题号常在行中间起头，只扫左侧窄条会漏掉
+    一半的题。代价是 det+rec 都跑整页，比 line_strips 慢一些。
+    """
+    engine = _get_engine()
+    if engine is None or image is None or image.size == 0:
+        return []
+    try:
+        height, width = image.shape[:2]
+        scale = min(1.0, OCR_MAX_SIDE / max(height, width))
+        small = cv2.resize(image, None, fx=scale, fy=scale) if scale < 1 else image
+        small = _without_red_pen(small)
+        boxes, _ = engine(small, use_det=True, use_cls=False, use_rec=False)
+        if not boxes:
+            return []
+        crops, positions = [], []
+        for box in boxes:
+            xs = [point[0] for point in box]
+            ys = [point[1] for point in box]
+            crop = small[
+                max(0, int(min(ys)) - 2): int(max(ys)) + 2,
+                max(0, int(min(xs)) - 2): int(max(xs)) + 2,
+            ]
+            if crop.size == 0 or crop.shape[0] < 8 or crop.shape[1] < 8:
+                continue
+            crops.append(crop)
+            positions.append((min(xs), min(ys)))
+        if not crops:
+            return []
+        texts, _ = engine.text_rec(crops)
+        return [
+            (int(y / scale), int(x / scale), text, float(score))
+            for (text, score), (x, y) in zip(texts, positions)
+        ]
+    except Exception:
+        return []
+
+
 def filter_starts(
     strips: list[tuple[int, int, str, float]], width: int
 ) -> list[tuple[int, int]]:

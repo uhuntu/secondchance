@@ -331,6 +331,7 @@ def _apply_split(
     wrong_flags: list[bool | None] | None = None,
     ink_boxes: list[list[list[int]]] | None = None,
     knowledge_points: list[str | None] | None = None,
+    answer_masks: list[list[list[int]]] | None = None,
 ) -> list[Question]:
     """把一页的题目整体换成新的切片集合。
 
@@ -361,6 +362,8 @@ def _apply_split(
                     item.suspected_wrong = bool(wrong_flags[index])
                 if ink_boxes is not None and index < len(ink_boxes):
                     item.ink_boxes = json.dumps(ink_boxes[index])
+                if answer_masks is not None and index < len(answer_masks):
+                    item.answer_masks = json.dumps(answer_masks[index])
                 if (
                     knowledge_points is not None
                     and index < len(knowledge_points)
@@ -385,6 +388,7 @@ def _apply_split(
                     crop_reviewed=True,
                     suspected_wrong=bool(wrong_flags[new_index]) if wrong_flags and len(wrong_flags) > new_index else False,
                     ink_boxes=json.dumps(ink_boxes[new_index]) if ink_boxes and len(ink_boxes) > new_index else "[]",
+                    answer_masks=json.dumps(answer_masks[new_index], ensure_ascii=False) if answer_masks and len(answer_masks) > new_index else "",
                     knowledge_point=suggestion or "",
                 )
             )
@@ -478,6 +482,41 @@ async def create_question(
     return question_to_dict(question)
 
 
+def _blanks_to_masks(
+    blanks_px: list[list[int]],
+    lines: list[int],
+    height: int,
+    width: int,
+    skip_first: bool,
+) -> list[list[list[int]]]:
+    """整页像素坐标的填空空位框 → 每张切片的 answer_masks（0-999 归一化）。
+
+    格式与手动遮盖一致：[x, y, width, height]（paper.html 按 /10 转百分比铺在裁剪图上），
+    x 相对整页宽、y 相对所在切片高。
+    """
+    per_crop = ai_split.boxes_per_crop(blanks_px, lines, height, skip_first)
+    bounds = [0, *lines, height]
+    bands = list(zip(bounds, bounds[1:]))
+    if skip_first and bands:
+        bands = bands[1:]
+    masks: list[list[list[int]]] = []
+    for (top, bottom), boxes in zip(bands, per_crop):
+        crop_h = max(1, bottom - top)
+        # boxes_per_crop 返回的 y 已是切片内坐标（裁剪过边界），直接归一化
+        masks.append(
+            [
+                [
+                    int(round(x1 * 999 / width)),
+                    int(round(y1 * 999 / crop_h)),
+                    int(round((x2 - x1) * 999 / width)),
+                    int(round((y2 - y1) * 999 / crop_h)),
+                ]
+                for x1, y1, x2, y2 in boxes
+            ]
+        )
+    return masks
+
+
 def _create_page(
     db: Session,
     subject: str,
@@ -496,19 +535,22 @@ def _create_page(
         analysis = analyze(raw_path)
         if page_points is not None:
             image = warp_with_corners(analysis.image, page_points)
-            lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
-                image, suggest_split_lines(image)
+            lines, ai_active, wrong_flags, hw_boxes, knowledge_flags, blanks_px = (
+                ai_split.split_plan(image, suggest_split_lines(image))
             )
         else:
             image = analysis.image
-            lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
-                image, analysis.lines
+            lines, ai_active, wrong_flags, hw_boxes, knowledge_flags, blanks_px = (
+                ai_split.split_plan(image, analysis.lines)
             )
         page_detected = analysis.page_detected
         lines = _sanitize_lines(lines, image.shape[0])
         page_path = _save_page(image, stem)
         crop_paths = _split_into_crops(image, lines, stem, skip_first=ai_active)
         ink_boxes_per_crop = ai_split.boxes_per_crop(hw_boxes, lines, image.shape[0], ai_active)
+        answer_masks_per_crop = _blanks_to_masks(
+            blanks_px, lines, image.shape[0], image.shape[1], ai_active
+        )
     except HTTPException:
         _delete_file(raw_path)
         raise
@@ -533,7 +575,7 @@ def _create_page(
         questions = _apply_split(
             db, representative, source_name, crop_paths,
             wrong_flags=wrong_flags, ink_boxes=ink_boxes_per_crop,
-            knowledge_points=knowledge_flags,
+            knowledge_points=knowledge_flags, answer_masks=answer_masks_per_crop,
         )
     except HTTPException:
         _delete_file(page_path)
@@ -630,7 +672,7 @@ def straighten_question(
         straightened = warp_with_corners(raw, payload.points)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
+    lines, ai_active, wrong_flags, hw_boxes, knowledge_flags, blanks_px = ai_split.split_plan(
         straightened, suggest_split_lines(straightened)
     )
     _validate_lines(lines, straightened.shape[0])
@@ -642,12 +684,16 @@ def straighten_question(
         skip_first=ai_active,
     )
     ink_boxes_per_crop = ai_split.boxes_per_crop(hw_boxes, lines, straightened.shape[0], ai_active)
+    answer_masks_per_crop = _blanks_to_masks(
+        blanks_px, lines, straightened.shape[0], straightened.shape[1], ai_active
+    )
     try:
         # 整组一起改指向新整页，否则 source_image_path 会指向已删除的旧文件。
         questions = _apply_split(
             db, question, new_name, crop_paths,
             rename_group_from=source_name, wrong_flags=wrong_flags,
             ink_boxes=ink_boxes_per_crop, knowledge_points=knowledge_flags,
+            answer_masks=answer_masks_per_crop,
         )
     except HTTPException:
         _delete_file(new_path)
@@ -680,8 +726,8 @@ def suggest_question(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        lines, ai_active, _wrong_flags, hw_boxes, _knowledge_flags = ai_split.split_plan(
-            image, suggest_split_lines(image)
+        lines, ai_active, _wrong_flags, hw_boxes, _knowledge_flags, _blanks_px = (
+            ai_split.split_plan(image, suggest_split_lines(image))
         )
         return {
             "lines": _validate_lines(lines, image.shape[0]),
@@ -712,8 +758,8 @@ def judge_question_page(question_id: int, db: Session = Depends(get_db)):
     if image is None:
         raise HTTPException(404, "整页原图已丢失，请重新拍照上传")
     try:
-        lines, ai_active, wrong_flags, hw_boxes, knowledge_flags = ai_split.split_plan(
-            image, suggest_split_lines(image)
+        lines, ai_active, wrong_flags, hw_boxes, knowledge_flags, _blanks_px = (
+            ai_split.split_plan(image, suggest_split_lines(image))
         )
     except HTTPException:
         return {"updated": False, "suspected": 0, "tagged": 0, "ai_active": False}
@@ -987,5 +1033,10 @@ def get_upload(filename: str, clean: int = 0, db: Session = Depends(get_db)):
             cleaned = remove_handwriting(image, extra_regions=regions)
             ok, buffer = cv2.imencode(".jpg", cleaned, [cv2.IMWRITE_JPEG_QUALITY, 92])
             if ok:
-                return Response(content=buffer.tobytes(), media_type="image/jpeg")
-    return FileResponse(file_path)
+                # 去手写算法随时在改，绝不能让浏览器缓存练习卷图片
+                return Response(
+                    content=buffer.tobytes(),
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"},
+                )
+    return FileResponse(file_path, headers={"Cache-Control": "no-store"})
