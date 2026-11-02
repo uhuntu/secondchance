@@ -167,20 +167,46 @@ def _save_page(image, stem: str) -> Path:
     return path
 
 
+def _min_band(height: int) -> int:
+    """题目片段的最小高度：绝对下限 + 页高的 1/20，取大者。
+
+    手机照片动辄 2800px 高，60px 绝对下限挡不住 62px 的碎片题。
+    """
+    return max(MIN_BAND_HEIGHT, height // 20)
+
+
 def _validate_lines(lines: list, height: int) -> list[int]:
     """切割线去重、排序、限量，并保证每道题不至于被切得太矮。"""
+    min_band = _min_band(height)
     cleaned: list[int] = []
     for line in lines:
         value = int(line)
         if not 0 < value < height:
             raise HTTPException(400, "切割线超出了这一页的范围")
-        if not cleaned or value - cleaned[-1] >= MIN_BAND_HEIGHT:
+        if not cleaned or value - cleaned[-1] >= min_band:
             cleaned.append(value)
     if len(cleaned) > MAX_SPLITS:
         raise HTTPException(400, f"一页最多切 {MAX_SPLITS + 1} 道题")
-    if cleaned and (cleaned[0] < MIN_BAND_HEIGHT or height - cleaned[-1] < MIN_BAND_HEIGHT):
+    if cleaned and (cleaned[0] < min_band or height - cleaned[-1] < min_band):
         raise HTTPException(400, "切割线离页面边缘太近，会切出过窄的题目")
     return cleaned
+
+
+def _sanitize_lines(lines: list, height: int) -> list[int]:
+    """自动流程的切割线只修正、不拦截：贴边/过窄的线直接丢弃。
+
+    相邻两条线离得太近时丢后面那条，碎片并进上一题；
+    最坏情况一条不剩 → 整页当一道题，录入流程绝不因此报错卡死。
+    """
+    min_band = _min_band(height)
+    cleaned: list[int] = []
+    for line in sorted(int(line) for line in lines):
+        # 离页顶/页底太近的线丢掉，避免切出过窄的题
+        if not min_band <= line <= height - min_band:
+            continue
+        if not cleaned or line - cleaned[-1] >= min_band:
+            cleaned.append(line)
+    return cleaned[:MAX_SPLITS]
 
 
 def _split_into_crops(image, lines: list[int], stem: str, skip_first: bool = False) -> list[Path]:
@@ -479,7 +505,7 @@ def _create_page(
                 image, analysis.lines
             )
         page_detected = analysis.page_detected
-        lines = _validate_lines(lines, image.shape[0])
+        lines = _sanitize_lines(lines, image.shape[0])
         page_path = _save_page(image, stem)
         crop_paths = _split_into_crops(image, lines, stem, skip_first=ai_active)
         ink_boxes_per_crop = ai_split.boxes_per_crop(hw_boxes, lines, image.shape[0], ai_active)

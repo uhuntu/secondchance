@@ -30,8 +30,9 @@ import numpy as np
 
 import ocr_split
 
-# Agent Plan 的 key 走 /api/plan/v3，平台 key 走 /api/v3；按 key 类型用环境变量覆盖
-ARK_BASE_URL = os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/plan/v3")
+# Agent Plan 的 key 走 /api/plan/v3，Coding Plan 走 /api/coding/v3，平台 key 走 /api/v3；
+# 按 key 类型用环境变量覆盖
+ARK_BASE_URL = os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
 ARK_MODEL = os.environ.get("ARK_MODEL", "doubao-seed-2-1-pro-260915")
 AI_TIMEOUT = float(os.environ.get("AI_TIMEOUT", "60"))
 
@@ -211,9 +212,11 @@ def ai_markers(image: np.ndarray) -> tuple[list[dict], list[list[int]]] | None:
         content = response.json()["choices"][0]["message"]["content"]
         parsed = _parse_markers(content)
         if parsed is None:
+            print(f"[ai_split] AI 返回内容解析不出，降级 OCR：{content[:120]}", flush=True)
             return None
         return parsed
-    except Exception:
+    except Exception as exc:
+        print(f"[ai_split] AI 题号识别失败，降级 OCR：{type(exc).__name__}: {str(exc)[:200]}", flush=True)
         return None
 
 
